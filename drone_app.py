@@ -1,6 +1,5 @@
 import os
 import re
-import json
 import tempfile
 import numpy as np
 import pandas as pd
@@ -9,11 +8,15 @@ from PIL import Image
 import streamlit as st
 import folium
 from folium.raster_layers import ImageOverlay
-from branca.colormap import LinearColormap
-from pyproj import Transformer
 from streamlit_folium import st_folium
 
-from huggingface_hub import list_repo_files, hf_hub_download
+from pyproj import Transformer
+from huggingface_hub import (
+    list_repo_files,
+    hf_hub_download
+)
+
+import matplotlib.pyplot as plt
 
 
 # ============================================================
@@ -24,17 +27,15 @@ st.set_page_config(
     layout="wide"
 )
 
-st.title("Bloom Severity Viewer")
+st.title("Reservoir Bloom Severity Viewer")
 
 
 # ============================================================
-# HF CONFIG
+# HUGGING FACE CONFIG
 # ============================================================
 HF_REPO_ID = "osherr/drone_app"
 HF_REPO_TYPE = "dataset"
 
-# Put token in Streamlit secrets:
-# HF_TOKEN = "hf_xxxxxxxxx"
 HF_TOKEN = st.secrets.get("HF_TOKEN", None)
 
 if HF_TOKEN is None:
@@ -44,7 +45,7 @@ if HF_TOKEN is None:
     )
 
 if not HF_TOKEN:
-    st.warning("Please enter a Hugging Face token.")
+    st.warning("Please enter Hugging Face token.")
     st.stop()
 
 
@@ -61,7 +62,7 @@ def list_files(repo_id, repo_type, token):
 
 
 @st.cache_data(show_spinner=False)
-def download_hf_file(repo_id, filename, repo_type, token):
+def download_file(repo_id, filename, repo_type, token):
     return hf_hub_download(
         repo_id=repo_id,
         filename=filename,
@@ -72,11 +73,25 @@ def download_hf_file(repo_id, filename, repo_type, token):
 
 def extract_date_label(path):
     name = os.path.basename(path)
+
     m = re.search(r"_(\d{2}_\d{2})_", name)
-    return m.group(1) if m else name
+
+    if m:
+        return m.group(1)
+
+    return name
+
+
+def date_sort_key(pair):
+    d = pair[2]
+
+    day, month = d.split("_")
+
+    return int(month), int(day)
 
 
 def read_jgw_bounds(img_path):
+
     jgw_path = os.path.splitext(img_path)[0] + ".jgw"
 
     with open(jgw_path, "r") as f:
@@ -84,14 +99,17 @@ def read_jgw_bounds(img_path):
 
     pixel_size_x = vals[0]
     pixel_size_y = vals[3]
+
     x_center = vals[4]
     y_center = vals[5]
 
     img = Image.open(img_path).convert("L")
+
     W, H = img.size
 
     xmin = x_center - pixel_size_x / 2
     ymax = y_center - pixel_size_y / 2
+
     xmax = xmin + pixel_size_x * W
     ymin = ymax + pixel_size_y * H
 
@@ -104,62 +122,78 @@ def read_jgw_bounds(img_path):
     lon_min, lat_min = transformer.transform(xmin, ymin)
     lon_max, lat_max = transformer.transform(xmax, ymax)
 
-    return [[lat_min, lon_min], [lat_max, lon_max]], img
+    bounds = [
+        [lat_min, lon_min],
+        [lat_max, lon_max]
+    ]
+
+    return bounds, img
 
 
 def severity_category(mean_severity):
+
     if mean_severity < 1:
         return "Low"
+
     elif mean_severity < 2:
         return "Medium"
-    return "High"
+
+    else:
+        return "High"
 
 
 def make_colored_overlay(img):
+
     arr = np.array(img).astype(np.float32)
+
     severity = (arr / 255.0) * 3.0
+
     valid = arr > 0
 
     if np.sum(valid) > 0:
         mean_severity = float(np.mean(severity[valid]))
-        median_severity = float(np.median(severity[valid]))
-        max_severity = float(np.max(severity[valid]))
-        water_pixel_count = int(np.sum(valid))
     else:
         mean_severity = 0.0
-        median_severity = 0.0
-        max_severity = 0.0
-        water_pixel_count = 0
 
-    rgba = np.zeros((arr.shape[0], arr.shape[1], 4), dtype=np.uint8)
-    s = np.clip(severity / 3.0, 0, 1)
+    rgba = np.zeros(
+        (arr.shape[0], arr.shape[1], 4),
+        dtype=np.uint8
+    )
 
-    colors = np.zeros((arr.shape[0], arr.shape[1], 3), dtype=np.uint8)
+    # ========================================================
+    # LOW -> GREEN
+    # MEDIUM -> ORANGE
+    # HIGH -> RED
+    # ========================================================
+    low_mask = severity < 1
+    med_mask = (severity >= 1) & (severity < 2)
+    high_mask = severity >= 2
 
-    colors[..., 0] = np.clip(255 * np.maximum(0, 2 * s - 0.3), 0, 255)
-    colors[..., 1] = np.clip(255 * (1 - np.abs(s - 0.45) * 1.8), 0, 255)
-    colors[..., 2] = np.clip(255 * (1 - 2.2 * s), 0, 255)
+    rgba[low_mask] = [0, 255, 0, 190]
+    rgba[med_mask] = [255, 165, 0, 190]
+    rgba[high_mask] = [255, 0, 0, 190]
 
-    rgba[..., :3] = colors
-    rgba[..., 3] = np.where(valid, 210, 0).astype(np.uint8)
+    rgba[~valid, 3] = 0
 
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+    tmp = tempfile.NamedTemporaryFile(
+        delete=False,
+        suffix=".png"
+    )
+
     Image.fromarray(rgba).save(tmp.name)
 
     stats = {
-        "date": None,
         "severity_level": severity_category(mean_severity),
-        "mean_severity": mean_severity,
-        "median_severity": median_severity,
-        "max_severity": max_severity,
-        "water_pixel_count": water_pixel_count,
+        "mean_severity": mean_severity
     }
 
     return tmp.name, stats
 
 
 def make_original_png(original_path):
+
     img = Image.open(original_path).convert("RGB")
+
     arr = np.array(img)
 
     black_mask = (
@@ -168,20 +202,37 @@ def make_original_png(original_path):
         (arr[:, :, 2] < 10)
     )
 
-    rgba = np.zeros((arr.shape[0], arr.shape[1], 4), dtype=np.uint8)
-    rgba[:, :, :3] = arr
-    rgba[:, :, 3] = np.where(black_mask, 0, 255).astype(np.uint8)
+    rgba = np.zeros(
+        (arr.shape[0], arr.shape[1], 4),
+        dtype=np.uint8
+    )
 
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+    rgba[:, :, :3] = arr
+
+    rgba[:, :, 3] = np.where(
+        black_mask,
+        0,
+        255
+    ).astype(np.uint8)
+
+    tmp = tempfile.NamedTemporaryFile(
+        delete=False,
+        suffix=".png"
+    )
+
     Image.fromarray(rgba).save(tmp.name)
 
     return tmp.name
 
 
 # ============================================================
-# LOAD FILE LIST
+# LOAD HF FILES
 # ============================================================
-files = list_files(HF_REPO_ID, HF_REPO_TYPE, HF_TOKEN)
+files = list_files(
+    HF_REPO_ID,
+    HF_REPO_TYPE,
+    HF_TOKEN
+)
 
 water_bodies = sorted({
     f.split("/")[0]
@@ -189,15 +240,23 @@ water_bodies = sorted({
     if "/" in f
 })
 
-if not water_bodies:
-    st.error("No water-body folders found in the dataset.")
+if len(water_bodies) == 0:
+    st.error("No water bodies found.")
     st.stop()
 
+
+# ============================================================
+# SELECT WATER BODY
+# ============================================================
 selected_body = st.selectbox(
     "Choose water body",
     water_bodies
 )
 
+
+# ============================================================
+# GET FILES
+# ============================================================
 heatmap_files = sorted([
     f for f in files
     if f.startswith(f"{selected_body}/heatmaps/")
@@ -211,29 +270,57 @@ original_files = sorted([
 ])
 
 if len(heatmap_files) == 0:
-    st.warning(f"No heatmaps found for {selected_body}.")
+    st.warning("No heatmaps found.")
     st.stop()
 
 
 # ============================================================
-# DOWNLOAD REQUIRED FILES
+# DOWNLOAD
 # ============================================================
 local_heatmaps = []
 local_originals = []
 
-for hf_path in heatmap_files:
-    local_img = download_hf_file(HF_REPO_ID, hf_path, HF_REPO_TYPE, HF_TOKEN)
-    local_jgw = download_hf_file(HF_REPO_ID, os.path.splitext(hf_path)[0] + ".jgw", HF_REPO_TYPE, HF_TOKEN)
-    local_prj = download_hf_file(HF_REPO_ID, os.path.splitext(hf_path)[0] + ".prj", HF_REPO_TYPE, HF_TOKEN)
-    local_heatmaps.append(local_img)
+with st.spinner("Downloading files..."):
 
-for hf_path in original_files:
-    local_img = download_hf_file(HF_REPO_ID, hf_path, HF_REPO_TYPE, HF_TOKEN)
-    local_originals.append(local_img)
+    for hf_path in heatmap_files:
+
+        local_img = download_file(
+            HF_REPO_ID,
+            hf_path,
+            HF_REPO_TYPE,
+            HF_TOKEN
+        )
+
+        download_file(
+            HF_REPO_ID,
+            os.path.splitext(hf_path)[0] + ".jgw",
+            HF_REPO_TYPE,
+            HF_TOKEN
+        )
+
+        download_file(
+            HF_REPO_ID,
+            os.path.splitext(hf_path)[0] + ".prj",
+            HF_REPO_TYPE,
+            HF_TOKEN
+        )
+
+        local_heatmaps.append(local_img)
+
+    for hf_path in original_files:
+
+        local_img = download_file(
+            HF_REPO_ID,
+            hf_path,
+            HF_REPO_TYPE,
+            HF_TOKEN
+        )
+
+        local_originals.append(local_img)
 
 
 # ============================================================
-# MATCH ORIGINALS BY DATE
+# MATCH FILES BY DATE
 # ============================================================
 original_by_date = {
     extract_date_label(p): p
@@ -243,22 +330,45 @@ original_by_date = {
 pairs = []
 
 for h in local_heatmaps:
+
     d = extract_date_label(h)
+
     if d in original_by_date:
-        pairs.append((h, original_by_date[d], d))
+
+        pairs.append(
+            (
+                h,
+                original_by_date[d],
+                d
+            )
+        )
+
+pairs = sorted(
+    pairs,
+    key=date_sort_key
+)
 
 if len(pairs) == 0:
-    st.error("Could not match heatmaps and originals by date.")
+    st.error("Could not match files.")
     st.stop()
 
 
 # ============================================================
 # CREATE MAP
 # ============================================================
-first_bounds, _ = read_jgw_bounds(pairs[0][0])
+first_bounds, _ = read_jgw_bounds(
+    pairs[0][0]
+)
 
-center_lat = (first_bounds[0][0] + first_bounds[1][0]) / 2
-center_lon = (first_bounds[0][1] + first_bounds[1][1]) / 2
+center_lat = (
+    first_bounds[0][0] +
+    first_bounds[1][0]
+) / 2
+
+center_lon = (
+    first_bounds[0][1] +
+    first_bounds[1][1]
+) / 2
 
 m = folium.Map(
     location=[center_lat, center_lon],
@@ -279,12 +389,28 @@ folium.TileLayer(
     control=True
 ).add_to(m)
 
+
+# ============================================================
+# ADD LAYERS
+# ============================================================
 summary_rows = []
 
-for i, (heatmap_path, original_path, date_label) in enumerate(pairs):
-    bounds, heat_img = read_jgw_bounds(heatmap_path)
+for i, (
+    heatmap_path,
+    original_path,
+    date_label
+) in enumerate(pairs):
 
-    original_png = make_original_png(original_path)
+    bounds, heat_img = read_jgw_bounds(
+        heatmap_path
+    )
+
+    # ========================================================
+    # ORIGINAL FIRST
+    # ========================================================
+    original_png = make_original_png(
+        original_path
+    )
 
     ImageOverlay(
         name=f"{date_label} | Original",
@@ -295,61 +421,162 @@ for i, (heatmap_path, original_path, date_label) in enumerate(pairs):
         show=(i == 0)
     ).add_to(m)
 
-    heat_png, stats = make_colored_overlay(heat_img)
+    # ========================================================
+    # HEATMAP SECOND
+    # ========================================================
+    heat_png, stats = make_colored_overlay(
+        heat_img
+    )
+
     stats["date"] = date_label
 
     ImageOverlay(
-        name=f"{date_label} | Bloom severity: {stats['severity_level']}",
+        name=f"{date_label} | {stats['severity_level']} Bloom",
         image=heat_png,
         bounds=bounds,
-        opacity=0.95,
+        opacity=0.85,
         interactive=True,
-        show=(i == 0)
+        show=False
     ).add_to(m)
 
     summary_rows.append(stats)
 
-colormap = LinearColormap(
-    colors=["blue", "green", "yellow", "orange", "red"],
-    vmin=0,
-    vmax=3,
-    caption="Bloom severity: Low → Medium → High"
+
+# ============================================================
+# CUSTOM LEGEND
+# ============================================================
+legend_html = """
+<div style="
+position: fixed;
+bottom: 30px;
+right: 30px;
+z-index: 9999;
+background: white;
+padding: 12px;
+border: 2px solid #444;
+border-radius: 8px;
+font-size: 14px;
+">
+<b>Bloom severity</b><br>
+<span style="color:green;">■</span> Low<br>
+<span style="color:orange;">■</span> Medium<br>
+<span style="color:red;">■</span> High
+</div>
+"""
+
+m.get_root().html.add_child(
+    folium.Element(legend_html)
 )
 
-colormap.add_to(m)
-folium.LayerControl(collapsed=False).add_to(m)
+folium.LayerControl(
+    collapsed=False
+).add_to(m)
 
 
 # ============================================================
-# SHOW APP
+# DISPLAY
 # ============================================================
 col1, col2 = st.columns([3, 1])
 
 with col1:
-    st_folium(m, width=1000, height=650)
 
-with col2:
-    st.subheader("Severity timeline")
-
-    summary_df = pd.DataFrame(summary_rows)
-
-    display_df = summary_df[[
-        "date",
-        "severity_level",
-        "water_pixel_count"
-    ]].copy()
-
-    display_df.columns = [
-        "Date",
-        "Bloom level",
-        "Water pixels"
-    ]
-
-    st.dataframe(display_df, hide_index=True)
-
-    st.line_chart(
-        summary_df.set_index("date")["mean_severity"]
+    st_folium(
+        m,
+        width=1000,
+        height=700
     )
 
-    latest = summary_df.iloc[-1]["severity_level"]
-    st.metric("Latest bloom level", latest)
+with col2:
+
+    st.subheader("Bloom Timeline")
+
+    summary_df = pd.DataFrame(
+        summary_rows
+    )
+
+    st.dataframe(
+        summary_df[[
+            "date",
+            "severity_level"
+        ]].rename(columns={
+            "date": "Date",
+            "severity_level": "Bloom Level"
+        }),
+        hide_index=True
+    )
+
+    # ========================================================
+    # PLOT
+    # ========================================================
+    level_to_value = {
+        "Low": 1,
+        "Medium": 2,
+        "High": 3
+    }
+
+    level_to_color = {
+        "Low": "green",
+        "Medium": "orange",
+        "High": "red"
+    }
+
+    summary_df["level_value"] = summary_df[
+        "severity_level"
+    ].map(level_to_value)
+
+    fig, ax = plt.subplots(
+        figsize=(5, 3)
+    )
+
+    for _, row in summary_df.iterrows():
+
+        ax.scatter(
+            row["date"],
+            row["level_value"],
+            s=180,
+            color=level_to_color[
+                row["severity_level"]
+            ]
+        )
+
+    ax.plot(
+        summary_df["date"],
+        summary_df["level_value"],
+        color="black",
+        linewidth=1,
+        alpha=0.4
+    )
+
+    ax.set_yticks([1, 2, 3])
+
+    ax.set_yticklabels([
+        "Low",
+        "Medium",
+        "High"
+    ])
+
+    ax.set_xlabel("Date")
+
+    ax.set_ylabel("Bloom")
+
+    ax.set_title(
+        "Bloom Severity Timeline"
+    )
+
+    ax.grid(
+        True,
+        alpha=0.3
+    )
+
+    plt.xticks(rotation=45)
+
+    st.pyplot(fig)
+
+    latest = summary_df.iloc[-1][
+        "severity_level"
+    ]
+
+    st.metric(
+        "Latest Bloom Level",
+        latest
+    )
