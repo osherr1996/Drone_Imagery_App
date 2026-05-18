@@ -78,16 +78,10 @@ def extract_date_label(path):
 def date_sort_key(pair):
     d = pair[2]
 
-    # split DD_MM_YYYY
+    # expected format: DD_MM_YYYY
     day, month, year = d.split("_")
 
     return int(year), int(month), int(day)
-
-
-def date_sort_key(pair):
-    d = pair[2]
-    day, month = d.split("_")
-    return int(month), int(day)
 
 
 def read_jgw_bounds(img_path):
