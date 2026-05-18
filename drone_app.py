@@ -68,8 +68,20 @@ def download_file(repo_id, filename, repo_type, token):
 
 def extract_date_label(path):
     name = os.path.basename(path)
-    m = re.search(r"_(\d{2}_\d{2})_", name)
+
+    # matches _DD_MM_YYYY_
+    m = re.search(r"_(\d{2}_\d{2}_\d{4})_", name)
+
     return m.group(1) if m else name
+
+
+def date_sort_key(pair):
+    d = pair[2]
+
+    # split DD_MM_YYYY
+    day, month, year = d.split("_")
+
+    return int(year), int(month), int(day)
 
 
 def date_sort_key(pair):
