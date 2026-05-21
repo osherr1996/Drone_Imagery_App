@@ -36,6 +36,40 @@ if not HF_TOKEN:
 
 
 # ============================================================
+# COLOR PALETTE
+# Continuous: dark blue (clean water) -> cyan -> green -> yellow -> orange -> dark red (high bloom)
+# ============================================================
+PALETTE = np.array([
+    [0,   0,   139],  # 0.00  dark blue      (clean water)
+    [0,   80,  200],  # 0.10  blue
+    [0,   160, 220],  # 0.22  sky blue
+    [0,   210, 210],  # 0.33  cyan
+    [0,   200, 120],  # 0.44  teal-green
+    [80,  200,  0],   # 0.55  green
+    [200, 220,  0],   # 0.64  yellow-green
+    [255, 220,  0],   # 0.72  yellow
+    [255, 140,  0],   # 0.82  orange
+    [200,  30,  0],   # 0.92  red
+    [120,   0,  0],   # 1.00  dark red        (high bloom)
+], dtype=np.float32)
+
+
+def apply_palette(t_arr, alpha_arr):
+    """
+    t_arr    : float32 H x W, values 0..1  (0 = clean/low, 1 = high bloom)
+    alpha_arr: uint8   H x W, 0=transparent 255=opaque
+    Returns RGBA uint8 H x W x 4
+    """
+    n    = len(PALETTE) - 1
+    idx  = np.clip(t_arr * n, 0, n)
+    lo   = np.floor(idx).astype(int)
+    hi   = np.clip(lo + 1, 0, n)
+    frac = (idx - lo)[..., None]
+    rgb  = (PALETTE[lo] * (1 - frac) + PALETTE[hi] * frac).astype(np.uint8)
+    return np.concatenate([rgb, alpha_arr[..., None]], axis=-1)
+
+
+# ============================================================
 # HELPERS
 # ============================================================
 @st.cache_data(show_spinner=False)
@@ -86,7 +120,6 @@ def severity_category(mean_severity):
     return "High"
 
 
-# ---- Original drone image -> transparent PNG ----
 def make_original_png(img_path):
     img = Image.open(img_path).convert("RGB")
     arr = np.array(img)
@@ -99,53 +132,45 @@ def make_original_png(img_path):
     return tmp.name
 
 
-# ---- Severity heatmap (grayscale 0-255 -> 0-3) -> blue/green/yellow/red RGBA ----
 def make_severity_png(img_path):
+    """Grayscale 0-255 -> severity 0-3 -> palette, fully opaque over water."""
     img = Image.open(img_path).convert("L")
     arr = np.array(img).astype(np.float32)
-    severity = (arr / 255.0) * 3.0
     valid    = arr > 0
+    severity = (arr / 255.0) * 3.0
     mean_sev = float(np.mean(severity[valid])) if valid.any() else 0.0
-    s = np.clip(severity / 3.0, 0, 1)
-    rgba = np.zeros((*arr.shape, 4), dtype=np.uint8)
-    rgba[:,:,0] = np.clip(255 * np.maximum(0, 2.2*s - 0.25), 0, 255)
-    rgba[:,:,1] = np.clip(255 * (1 - np.abs(s - 0.45)*1.7),  0, 255)
-    rgba[:,:,2] = np.clip(255 * (1 - 2.0*s),                  0, 255)
-    rgba[:,:,3] = np.where(valid, 210, 0).astype(np.uint8)
+    t     = np.clip(severity / 3.0, 0, 1)
+    alpha = np.where(valid, 255, 0).astype(np.uint8)
+    rgba  = apply_palette(t, alpha)
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     Image.fromarray(rgba).save(tmp.name)
     return tmp.name, mean_sev
 
 
-# ---- Pseudo-BI heatmap (grayscale 0-255 -> BI_MIN-BI_MAX) -> viridis RGBA ----
 def make_pseudo_bi_png(img_path, bi_min=0.6, bi_max=3.5):
+    """Grayscale 0-255 -> BI_MIN-BI_MAX -> palette, fully opaque over water."""
     img   = Image.open(img_path).convert("L")
     arr   = np.array(img).astype(np.float32)
     valid = arr > 0
     bi    = bi_min + (arr / 255.0) * (bi_max - bi_min)
     t     = np.clip((bi - bi_min) / (bi_max - bi_min), 0, 1)
-    rgba  = np.zeros((*arr.shape, 4), dtype=np.uint8)
-    rgba[:,:,0] = np.clip(255 * (0.28 + 0.85*t - 0.5*t**2),  0, 255)
-    rgba[:,:,1] = np.clip(255 * (0.00 + 1.20*t - 0.20*t**2), 0, 255)
-    rgba[:,:,2] = np.clip(255 * (0.50 - 0.90*t + 0.40*t**2), 0, 255)
-    rgba[:,:,3] = np.where(valid, 210, 0).astype(np.uint8)
+    alpha = np.where(valid, 255, 0).astype(np.uint8)
+    rgba  = apply_palette(t, alpha)
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     Image.fromarray(rgba).save(tmp.name)
     mean_bi = float(np.mean(bi[valid])) if valid.any() else 0.0
     return tmp.name, mean_bi
 
 
-# ---- High bloom probability (grayscale 0-255 -> 0-1) -> white-to-red RGBA ----
 def make_high_bloom_prob_png(img_path):
+    """Grayscale 0-255 -> probability 0-1 -> palette, fully opaque over water."""
     img   = Image.open(img_path).convert("L")
     arr   = np.array(img).astype(np.float32)
     valid = arr > 0
     prob  = arr / 255.0
-    rgba  = np.zeros((*arr.shape, 4), dtype=np.uint8)
-    rgba[:,:,0] = 255
-    rgba[:,:,1] = np.clip(255 * (1 - prob), 0, 255).astype(np.uint8)
-    rgba[:,:,2] = np.clip(255 * (1 - prob), 0, 255).astype(np.uint8)
-    rgba[:,:,3] = np.where(valid, 210, 0).astype(np.uint8)
+    t     = np.clip(prob, 0, 1)
+    alpha = np.where(valid, 255, 0).astype(np.uint8)
+    rgba  = apply_palette(t, alpha)
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     Image.fromarray(rgba).save(tmp.name)
     mean_prob = float(np.mean(prob[valid])) if valid.any() else 0.0
@@ -153,32 +178,30 @@ def make_high_bloom_prob_png(img_path):
 
 
 def make_custom_legend():
-    return """
+    grad = ("linear-gradient(to right,"
+            "rgb(0,0,139),"
+            "rgb(0,160,220),"
+            "rgb(0,210,210),"
+            "rgb(80,200,0),"
+            "rgb(255,220,0),"
+            "rgb(255,140,0),"
+            "rgb(120,0,0))")
+    bar = (f'<div style="height:16px;margin:6px 0 4px;background:{grad};'
+           f'border:1px solid #555;border-radius:3px;"></div>')
+    labels = ('<div style="display:flex;justify-content:space-between;font-size:11px;">'
+              '<span>Clean</span><span>Low</span><span>Medium</span><span>High</span>'
+              '</div>')
+    return f"""
     <div style="position:fixed;bottom:30px;right:30px;z-index:9999;
     background:white;padding:12px;border:2px solid #444;border-radius:8px;
-    font-size:13px;width:220px;box-shadow:0 2px 8px rgba(0,0,0,0.25);">
-    <b>Bloom Severity</b>
-    <div style="height:14px;margin:6px 0 4px;
-    background:linear-gradient(to right,blue,green,yellow,orange,red);
-    border:1px solid #555;"></div>
-    <div style="display:flex;justify-content:space-between;">
-        <span>Low</span><span>Medium</span><span>High</span>
-    </div>
-    <hr style="margin:8px 0;">
-    <b>Pseudo-BI</b>
-    <div style="height:14px;margin:6px 0 4px;
-    background:linear-gradient(to right,#440154,#3b528b,#21918c,#5ec962,#fde725);
-    border:1px solid #555;"></div>
-    <div style="display:flex;justify-content:space-between;">
-        <span>Low</span><span>High</span>
-    </div>
-    <hr style="margin:8px 0;">
-    <b>High Bloom Probability</b>
-    <div style="height:14px;margin:6px 0 4px;
-    background:linear-gradient(to right,white,pink,red);
-    border:1px solid #555;"></div>
-    <div style="display:flex;justify-content:space-between;">
-        <span>0</span><span>1</span>
+    font-size:13px;width:230px;box-shadow:0 2px 8px rgba(0,0,0,0.25);">
+    <b>Bloom intensity</b>
+    {bar}{labels}
+    <hr style="margin:8px 0;"/>
+    <div style="font-size:11px;color:#555;">
+      Dark blue = clean water<br>
+      Dark red = high bloom<br>
+      Same scale for all 3 products
     </div>
     </div>
     """
@@ -213,11 +236,13 @@ def make_timeline_chart(summary_df):
                         "legend": {"title": "Bloom level"}
                     },
                     "tooltip": [
-                        {"field": "date", "type": "ordinal", "title": "Date"},
-                        {"field": "severity_level", "type": "nominal", "title": "Level"},
-                        {"field": "mean_bi", "type": "quantitative", "title": "Mean BI",
-                         "format": ".2f"},
-                        {"field": "mean_high_bloom_prob", "type": "quantitative",
+                        {"field": "date",                "type": "ordinal",
+                         "title": "Date"},
+                        {"field": "severity_level",      "type": "nominal",
+                         "title": "Level"},
+                        {"field": "mean_bi",             "type": "quantitative",
+                         "title": "Mean BI",         "format": ".2f"},
+                        {"field": "mean_high_bloom_prob","type": "quantitative",
                          "title": "High Bloom Prob", "format": ".2f"},
                     ]
                 }
@@ -241,17 +266,17 @@ selected_body = st.selectbox("Choose water body", water_bodies)
 
 
 # ============================================================
-# FIND FILES FOR SELECTED WATER BODY
+# FIND FILES
 # ============================================================
 def get_jpgs(prefix):
     return sorted([f for f in all_files
                    if f.startswith(f"{selected_body}/{prefix}/")
                    and f.lower().endswith(".jpg")])
 
-original_files       = get_jpgs("original")
-severity_files       = get_jpgs("severity")
-pseudo_bi_files      = get_jpgs("pseudo_bi")
-high_bloom_files     = get_jpgs("high_bloom_prob")   # <-- high bloom only
+original_files   = get_jpgs("original")
+severity_files   = get_jpgs("severity")
+pseudo_bi_files  = get_jpgs("pseudo_bi")
+high_bloom_files = get_jpgs("high_bloom_prob")
 
 if not severity_files:
     st.warning("No severity heatmaps found for this water body.")
@@ -259,7 +284,7 @@ if not severity_files:
 
 
 # ============================================================
-# DOWNLOAD ALL FILES
+# DOWNLOAD FILES
 # ============================================================
 def download_with_sidecars(hf_paths):
     local = {}
@@ -280,7 +305,6 @@ with st.spinner("Downloading data..."):
     high_bloom_by_date = download_with_sidecars(high_bloom_files)
 
 all_dates = sorted(sev_by_date.keys(), key=date_sort_key)
-
 if not all_dates:
     st.error("No dated files found.")
     st.stop()
@@ -312,7 +336,10 @@ for i, date in enumerate(all_dates):
         ImageOverlay(
             name=f"{date} | Original",
             image=make_original_png(orig_by_date[date]),
-            bounds=bounds, opacity=1.0, interactive=True, show=show_first,
+            bounds=bounds,
+            opacity=1.0,
+            interactive=True,
+            show=show_first,
         ).add_to(m)
 
     # -- Bloom Severity --
@@ -320,7 +347,10 @@ for i, date in enumerate(all_dates):
     ImageOverlay(
         name=f"{date} | Bloom Severity",
         image=sev_png,
-        bounds=bounds, opacity=0.90, interactive=True, show=False,
+        bounds=bounds,
+        opacity=1.0,
+        interactive=True,
+        show=False,
     ).add_to(m)
 
     # -- Pseudo-BI --
@@ -330,7 +360,10 @@ for i, date in enumerate(all_dates):
         ImageOverlay(
             name=f"{date} | Pseudo-BI",
             image=bi_png,
-            bounds=bounds, opacity=0.90, interactive=True, show=False,
+            bounds=bounds,
+            opacity=1.0,
+            interactive=True,
+            show=False,
         ).add_to(m)
 
     # -- High Bloom Probability --
@@ -340,7 +373,10 @@ for i, date in enumerate(all_dates):
         ImageOverlay(
             name=f"{date} | High Bloom Probability",
             image=hp_png,
-            bounds=bounds, opacity=0.90, interactive=True, show=False,
+            bounds=bounds,
+            opacity=1.0,
+            interactive=True,
+            show=False,
         ).add_to(m)
 
     summary_rows.append({
@@ -381,6 +417,6 @@ with col2:
 
     make_timeline_chart(summary_df)
 
-    st.metric("Latest Bloom Level",      summary_df.iloc[-1]["severity_level"])
-    st.metric("Latest Mean BI",          f"{summary_df.iloc[-1]['mean_bi']:.2f}")
-    st.metric("Latest High Bloom Prob",  f"{summary_df.iloc[-1]['mean_high_bloom_prob']:.2f}")
+    st.metric("Latest Bloom Level",     summary_df.iloc[-1]["severity_level"])
+    st.metric("Latest Mean BI",         f"{summary_df.iloc[-1]['mean_bi']:.2f}")
+    st.metric("Latest High Bloom Prob", f"{summary_df.iloc[-1]['mean_high_bloom_prob']:.2f}")
