@@ -34,6 +34,9 @@ if not HF_TOKEN:
     st.warning("Please enter Hugging Face token.")
     st.stop()
 
+# Threshold above which a pixel is flagged as a high-bloom hotspot
+HIGH_BLOOM_THRESHOLD = 0.5   # 0.0 – 1.0
+
 
 # ============================================================
 # HELPERS
@@ -86,7 +89,6 @@ def severity_category(mean_severity):
     return "High"
 
 
-# ---- Original drone image -> transparent PNG ----
 def make_original_png(img_path):
     img = Image.open(img_path).convert("RGB")
     arr = np.array(img)
@@ -99,7 +101,6 @@ def make_original_png(img_path):
     return tmp.name
 
 
-# ---- Severity heatmap (grayscale 0-255 -> 0-3) -> blue/green/yellow/red RGBA ----
 def make_severity_png(img_path):
     img = Image.open(img_path).convert("L")
     arr = np.array(img).astype(np.float32)
@@ -117,7 +118,6 @@ def make_severity_png(img_path):
     return tmp.name, mean_sev
 
 
-# ---- Pseudo-BI heatmap (grayscale 0-255 -> BI_MIN-BI_MAX) -> viridis RGBA ----
 def make_pseudo_bi_png(img_path, bi_min=0.6, bi_max=3.5):
     img   = Image.open(img_path).convert("L")
     arr   = np.array(img).astype(np.float32)
@@ -135,7 +135,6 @@ def make_pseudo_bi_png(img_path, bi_min=0.6, bi_max=3.5):
     return tmp.name, mean_bi
 
 
-# ---- High bloom probability (grayscale 0-255 -> 0-1) -> white-to-red RGBA ----
 def make_high_bloom_prob_png(img_path):
     img   = Image.open(img_path).convert("L")
     arr   = np.array(img).astype(np.float32)
@@ -152,36 +151,93 @@ def make_high_bloom_prob_png(img_path):
     return tmp.name, mean_prob
 
 
+def get_hotspot_latlon(img_path, bounds, threshold=HIGH_BLOOM_THRESHOLD):
+    """
+    Read high-bloom-probability grayscale image, find the centroid of all
+    pixels above `threshold`, return (lat, lon) in WGS84.
+    bounds = [[lat_min, lon_min], [lat_max, lon_max]]
+    """
+    img  = Image.open(img_path).convert("L")
+    arr  = np.array(img).astype(np.float32) / 255.0
+    H, W = arr.shape
+
+    hot = arr >= threshold
+    if not hot.any():
+        return None, float(np.max(arr))
+
+    # pixel-space centroid
+    ys, xs = np.where(hot)
+    cy = float(np.mean(ys))
+    cx = float(np.mean(xs))
+
+    lat_max = bounds[1][0]
+    lat_min = bounds[0][0]
+    lon_min = bounds[0][1]
+    lon_max = bounds[1][1]
+
+    lat = lat_max - (cy / H) * (lat_max - lat_min)
+    lon = lon_min + (cx / W) * (lon_max - lon_min)
+
+    max_prob = float(np.max(arr))
+    return (lat, lon), max_prob
+
+
 def make_custom_legend():
     return """
     <div style="position:fixed;bottom:30px;right:30px;z-index:9999;
     background:white;padding:12px;border:2px solid #444;border-radius:8px;
-    font-size:13px;width:220px;box-shadow:0 2px 8px rgba(0,0,0,0.25);">
-    <b>Bloom Severity</b>
-    <div style="height:14px;margin:6px 0 4px;
-    background:linear-gradient(to right,blue,green,yellow,orange,red);
-    border:1px solid #555;"></div>
-    <div style="display:flex;justify-content:space-between;">
-        <span>Low</span><span>Medium</span><span>High</span>
+    font-size:13px;width:230px;box-shadow:0 2px 8px rgba(0,0,0,0.25);">
+
+      <div style="font-weight:bold;margin-bottom:6px;">📅 Date</div>
+
+      <div style="padding-left:12px;border-left:3px solid #aaa;">
+
+        <div style="margin-bottom:6px;">🛸 Original Drone Image</div>
+
+        <div style="margin-bottom:4px;font-weight:bold;">— Products —</div>
+
+        <div style="padding-left:10px;">
+
+          <div style="margin-bottom:6px;">
+            <div style="font-size:12px;margin-bottom:3px;">Bloom Severity</div>
+            <div style="height:12px;
+            background:linear-gradient(to right,blue,green,yellow,orange,red);
+            border:1px solid #999;border-radius:2px;"></div>
+            <div style="display:flex;justify-content:space-between;font-size:10px;">
+              <span>Low</span><span>Med</span><span>High</span>
+            </div>
+          </div>
+
+          <div style="margin-bottom:6px;">
+            <div style="font-size:12px;margin-bottom:3px;">Pseudo-BI</div>
+            <div style="height:12px;
+            background:linear-gradient(to right,#440154,#3b528b,#21918c,#5ec962,#fde725);
+            border:1px solid #999;border-radius:2px;"></div>
+            <div style="display:flex;justify-content:space-between;font-size:10px;">
+              <span>Low</span><span>High</span>
+            </div>
+          </div>
+
+          <div style="margin-bottom:8px;">
+            <div style="font-size:12px;margin-bottom:3px;">High Bloom Probability</div>
+            <div style="height:12px;
+            background:linear-gradient(to right,white,pink,red);
+            border:1px solid #999;border-radius:2px;"></div>
+            <div style="display:flex;justify-content:space-between;font-size:10px;">
+              <span>0</span><span>1</span>
+            </div>
+          </div>
+
+        </div>
+
+        <div style="font-size:12px;">
+          🔴 Hotspot marker = high bloom<br>
+          &nbsp;&nbsp;&nbsp;probability &ge; {thr}
+        </div>
+
+      </div>
     </div>
-    <hr style="margin:8px 0;">
-    <b>Pseudo-BI</b>
-    <div style="height:14px;margin:6px 0 4px;
-    background:linear-gradient(to right,#440154,#3b528b,#21918c,#5ec962,#fde725);
-    border:1px solid #555;"></div>
-    <div style="display:flex;justify-content:space-between;">
-        <span>Low</span><span>High</span>
-    </div>
-    <hr style="margin:8px 0;">
-    <b>High Bloom Probability</b>
-    <div style="height:14px;margin:6px 0 4px;
-    background:linear-gradient(to right,white,pink,red);
-    border:1px solid #555;"></div>
-    <div style="display:flex;justify-content:space-between;">
-        <span>0</span><span>1</span>
-    </div>
-    </div>
-    """
+    """.format(thr=HIGH_BLOOM_THRESHOLD)
 
 
 def make_timeline_chart(summary_df):
@@ -213,12 +269,11 @@ def make_timeline_chart(summary_df):
                         "legend": {"title": "Bloom level"}
                     },
                     "tooltip": [
-                        {"field": "date", "type": "ordinal", "title": "Date"},
-                        {"field": "severity_level", "type": "nominal", "title": "Level"},
-                        {"field": "mean_bi", "type": "quantitative", "title": "Mean BI",
-                         "format": ".2f"},
-                        {"field": "mean_high_bloom_prob", "type": "quantitative",
-                         "title": "High Bloom Prob", "format": ".2f"},
+                        {"field": "date",                "type": "ordinal",      "title": "Date"},
+                        {"field": "severity_level",      "type": "nominal",      "title": "Level"},
+                        {"field": "mean_bi",             "type": "quantitative", "title": "Mean BI",          "format": ".2f"},
+                        {"field": "mean_high_bloom_prob","type": "quantitative", "title": "High Bloom Prob",  "format": ".2f"},
+                        {"field": "max_high_bloom_prob", "type": "quantitative", "title": "Max High Bloom",   "format": ".2f"},
                     ]
                 }
             }
@@ -241,17 +296,17 @@ selected_body = st.selectbox("Choose water body", water_bodies)
 
 
 # ============================================================
-# FIND FILES FOR SELECTED WATER BODY
+# FIND FILES
 # ============================================================
 def get_jpgs(prefix):
     return sorted([f for f in all_files
                    if f.startswith(f"{selected_body}/{prefix}/")
                    and f.lower().endswith(".jpg")])
 
-original_files       = get_jpgs("original")
-severity_files       = get_jpgs("severity")
-pseudo_bi_files      = get_jpgs("pseudo_bi")
-high_bloom_files     = get_jpgs("high_bloom_prob")   # <-- high bloom only
+original_files   = get_jpgs("original")
+severity_files   = get_jpgs("severity")
+pseudo_bi_files  = get_jpgs("pseudo_bi")
+high_bloom_files = get_jpgs("high_bloom_prob")
 
 if not severity_files:
     st.warning("No severity heatmaps found for this water body.")
@@ -259,7 +314,7 @@ if not severity_files:
 
 
 # ============================================================
-# DOWNLOAD ALL FILES
+# DOWNLOAD FILES
 # ============================================================
 def download_with_sidecars(hf_paths):
     local = {}
@@ -280,7 +335,6 @@ with st.spinner("Downloading data..."):
     high_bloom_by_date = download_with_sidecars(high_bloom_files)
 
 all_dates = sorted(sev_by_date.keys(), key=date_sort_key)
-
 if not all_dates:
     st.error("No dated files found.")
     st.stop()
@@ -301,47 +355,79 @@ folium.TileLayer(
     attr="Esri", name="Esri World Imagery", control=True,
 ).add_to(m)
 
+# Persistent hotspot group (always visible, not date-gated)
+hotspot_group = folium.FeatureGroup(name="🔴 Hotspots (high bloom ≥ {})".format(HIGH_BLOOM_THRESHOLD),
+                                    show=True)
+
 summary_rows = []
 
 for i, date in enumerate(all_dates):
     show_first = (i == 0)
     bounds = read_jgw_bounds(sev_by_date[date])
 
-    # -- Original --
+    # --- Original ---
+    orig_group = folium.FeatureGroup(name=f"📅 {date}", show=show_first)
     if date in orig_by_date:
         ImageOverlay(
-            name=f"{date} | Original",
+            name=f"  🛸 Original",
             image=make_original_png(orig_by_date[date]),
-            bounds=bounds, opacity=1.0, interactive=True, show=show_first,
-        ).add_to(m)
+            bounds=bounds, opacity=1.0, interactive=True, show=True,
+        ).add_to(orig_group)
+    orig_group.add_to(m)
 
-    # -- Bloom Severity --
+    # --- Products group ---
+    prod_group = folium.FeatureGroup(name=f"  └ {date} products", show=show_first)
+
     sev_png, mean_sev = make_severity_png(sev_by_date[date])
     ImageOverlay(
-        name=f"{date} | Bloom Severity",
+        name="    Bloom Severity",
         image=sev_png,
         bounds=bounds, opacity=0.90, interactive=True, show=False,
-    ).add_to(m)
+    ).add_to(prod_group)
 
-    # -- Pseudo-BI --
     mean_bi = 0.0
     if date in bi_by_date:
         bi_png, mean_bi = make_pseudo_bi_png(bi_by_date[date])
         ImageOverlay(
-            name=f"{date} | Pseudo-BI",
+            name="    Pseudo-BI",
             image=bi_png,
             bounds=bounds, opacity=0.90, interactive=True, show=False,
-        ).add_to(m)
+        ).add_to(prod_group)
 
-    # -- High Bloom Probability --
     mean_high_prob = 0.0
+    max_high_prob  = 0.0
     if date in high_bloom_by_date:
         hp_png, mean_high_prob = make_high_bloom_prob_png(high_bloom_by_date[date])
         ImageOverlay(
-            name=f"{date} | High Bloom Probability",
+            name="    High Bloom Probability",
             image=hp_png,
             bounds=bounds, opacity=0.90, interactive=True, show=False,
-        ).add_to(m)
+        ).add_to(prod_group)
+
+        # --- Hotspot marker ---
+        hotspot, max_high_prob = get_hotspot_latlon(
+            high_bloom_by_date[date], bounds, threshold=HIGH_BLOOM_THRESHOLD)
+
+        if hotspot is not None:
+            lat_h, lon_h = hotspot
+            folium.CircleMarker(
+                location=[lat_h, lon_h],
+                radius=12,
+                color="darkred",
+                fill=True,
+                fill_color="red",
+                fill_opacity=0.75,
+                weight=2,
+                tooltip=folium.Tooltip(
+                    f"<b>🔴 High Bloom Hotspot</b><br>"
+                    f"Date: {date}<br>"
+                    f"Max prob: {max_high_prob:.2f}<br>"
+                    f"Mean prob: {mean_high_prob:.2f}",
+                    sticky=True,
+                ),
+            ).add_to(hotspot_group)
+
+    prod_group.add_to(m)
 
     summary_rows.append({
         "date": date,
@@ -349,10 +435,13 @@ for i, date in enumerate(all_dates):
         "severity_level": severity_category(mean_sev),
         "mean_bi": mean_bi,
         "mean_high_bloom_prob": mean_high_prob,
+        "max_high_bloom_prob": max_high_prob,
     })
 
+hotspot_group.add_to(m)
+
 m.get_root().html.add_child(folium.Element(make_custom_legend()))
-folium.LayerControl(collapsed=False).add_to(m)
+folium.LayerControl(collapsed=False, sortLayers=False).add_to(m)
 
 
 # ============================================================
@@ -361,8 +450,12 @@ folium.LayerControl(collapsed=False).add_to(m)
 col1, col2 = st.columns([3, 1])
 
 with col1:
-    st.caption("Use the layer control (top-right of map) to toggle: "
-               "**Original**, **Bloom Severity**, **Pseudo-BI**, **High Bloom Probability**.")
+    st.caption(
+        "Layer control (top-right): toggle **Original** drone image, "
+        "**Bloom Severity / Pseudo-BI / High Bloom Probability** products, "
+        "and **🔴 Hotspot** markers where high bloom probability ≥ "
+        f"{HIGH_BLOOM_THRESHOLD}."
+    )
     st_folium(m, width=1000, height=700)
 
 with col2:
@@ -370,17 +463,19 @@ with col2:
     summary_df = pd.DataFrame(summary_rows)
 
     st.dataframe(
-        summary_df[["date","severity_level","mean_bi","mean_high_bloom_prob"]].rename(columns={
+        summary_df[["date","severity_level","mean_bi",
+                    "mean_high_bloom_prob","max_high_bloom_prob"]].rename(columns={
             "date": "Date",
             "severity_level": "Level",
             "mean_bi": "Mean BI",
-            "mean_high_bloom_prob": "High Bloom Prob",
+            "mean_high_bloom_prob": "Bloom Prob",
+            "max_high_bloom_prob":  "Max Prob",
         }),
         hide_index=True,
     )
 
     make_timeline_chart(summary_df)
 
-    st.metric("Latest Bloom Level",      summary_df.iloc[-1]["severity_level"])
-    st.metric("Latest Mean BI",          f"{summary_df.iloc[-1]['mean_bi']:.2f}")
-    st.metric("Latest High Bloom Prob",  f"{summary_df.iloc[-1]['mean_high_bloom_prob']:.2f}")
+    st.metric("Latest Bloom Level",     summary_df.iloc[-1]["severity_level"])
+    st.metric("Latest Mean BI",         f"{summary_df.iloc[-1]['mean_bi']:.2f}")
+    st.metric("Latest Max High Bloom",  f"{summary_df.iloc[-1]['max_high_bloom_prob']:.2f}")
