@@ -24,12 +24,13 @@ st.title("Reservoir Bloom Severity Viewer")
 # ============================================================
 # HUGGING FACE CONFIG
 # ============================================================
-HF_REPO_ID   = "osherr/drone_app"
+HF_REPO_ID = "osherr/drone_app"
 HF_REPO_TYPE = "dataset"
 
 HF_TOKEN = st.secrets.get("HF_TOKEN", None)
 if HF_TOKEN is None:
     HF_TOKEN = st.text_input("Enter Hugging Face token", type="password")
+
 if not HF_TOKEN:
     st.warning("Please enter Hugging Face token.")
     st.stop()
@@ -37,35 +38,29 @@ if not HF_TOKEN:
 
 # ============================================================
 # COLOR PALETTE
-# Continuous: dark blue (clean water) -> cyan -> green -> yellow -> orange -> dark red (high bloom)
 # ============================================================
 PALETTE = np.array([
-    [0,   0,   139],  # 0.00  dark blue      (clean water)
-    [0,   80,  200],  # 0.10  blue
-    [0,   160, 220],  # 0.22  sky blue
-    [0,   210, 210],  # 0.33  cyan
-    [0,   200, 120],  # 0.44  teal-green
-    [80,  200,  0],   # 0.55  green
-    [200, 220,  0],   # 0.64  yellow-green
-    [255, 220,  0],   # 0.72  yellow
-    [255, 140,  0],   # 0.82  orange
-    [200,  30,  0],   # 0.92  red
-    [120,   0,  0],   # 1.00  dark red        (high bloom)
+    [0,   0,   139],
+    [0,   80,  200],
+    [0,   160, 220],
+    [0,   210, 210],
+    [0,   200, 120],
+    [80,  200,  0],
+    [200, 220,  0],
+    [255, 220,  0],
+    [255, 140,  0],
+    [200,  30,  0],
+    [120,   0,  0],
 ], dtype=np.float32)
 
 
 def apply_palette(t_arr, alpha_arr):
-    """
-    t_arr    : float32 H x W, values 0..1  (0 = clean/low, 1 = high bloom)
-    alpha_arr: uint8   H x W, 0=transparent 255=opaque
-    Returns RGBA uint8 H x W x 4
-    """
-    n    = len(PALETTE) - 1
-    idx  = np.clip(t_arr * n, 0, n)
-    lo   = np.floor(idx).astype(int)
-    hi   = np.clip(lo + 1, 0, n)
+    n = len(PALETTE) - 1
+    idx = np.clip(t_arr * n, 0, n)
+    lo = np.floor(idx).astype(int)
+    hi = np.clip(lo + 1, 0, n)
     frac = (idx - lo)[..., None]
-    rgb  = (PALETTE[lo] * (1 - frac) + PALETTE[hi] * frac).astype(np.uint8)
+    rgb = (PALETTE[lo] * (1 - frac) + PALETTE[hi] * frac).astype(np.uint8)
     return np.concatenate([rgb, alpha_arr[..., None]], axis=-1)
 
 
@@ -79,8 +74,12 @@ def list_files(repo_id, repo_type, token):
 
 @st.cache_data(show_spinner=False)
 def download_file(repo_id, filename, repo_type, token):
-    return hf_hub_download(repo_id=repo_id, filename=filename,
-                           repo_type=repo_type, token=token)
+    return hf_hub_download(
+        repo_id=repo_id,
+        filename=filename,
+        repo_type=repo_type,
+        token=token
+    )
 
 
 def extract_date_label(path):
@@ -90,107 +89,151 @@ def extract_date_label(path):
 
 
 def date_sort_key(d):
-    day, month, year = d.split("_")
-    return int(year), int(month), int(day)
+    try:
+        day, month, year = d.split("_")
+        return int(year), int(month), int(day)
+    except Exception:
+        return 9999, 99, 99
 
 
 def read_jgw_bounds(img_path):
     jgw_path = os.path.splitext(img_path)[0] + ".jgw"
+
     with open(jgw_path, "r") as f:
         vals = [float(x.strip()) for x in f.readlines()]
+
     pixel_size_x = vals[0]
     pixel_size_y = vals[3]
-    x_center     = vals[4]
-    y_center     = vals[5]
+    x_center = vals[4]
+    y_center = vals[5]
+
     img = Image.open(img_path).convert("L")
     W, H = img.size
+
     xmin = x_center - pixel_size_x / 2
     ymax = y_center - pixel_size_y / 2
     xmax = xmin + pixel_size_x * W
     ymin = ymax + pixel_size_y * H
+
     t = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+
     lon_min, lat_min = t.transform(xmin, ymin)
     lon_max, lat_max = t.transform(xmax, ymax)
+
     return [[lat_min, lon_min], [lat_max, lon_max]]
 
 
 def severity_category(mean_severity):
-    if mean_severity < 1: return "Low"
-    if mean_severity < 2: return "Medium"
+    if mean_severity < 1:
+        return "Low"
+    if mean_severity < 2:
+        return "Medium"
     return "High"
 
 
 def make_original_png(img_path):
     img = Image.open(img_path).convert("RGB")
     arr = np.array(img)
-    black = (arr[:,:,0] < 10) & (arr[:,:,1] < 10) & (arr[:,:,2] < 10)
-    rgba  = np.zeros((*arr.shape[:2], 4), dtype=np.uint8)
-    rgba[:,:,:3] = arr
-    rgba[:,:, 3] = np.where(black, 0, 255).astype(np.uint8)
+
+    black = (
+        (arr[:, :, 0] < 10) &
+        (arr[:, :, 1] < 10) &
+        (arr[:, :, 2] < 10)
+    )
+
+    rgba = np.zeros((*arr.shape[:2], 4), dtype=np.uint8)
+    rgba[:, :, :3] = arr
+    rgba[:, :, 3] = np.where(black, 0, 255).astype(np.uint8)
+
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     Image.fromarray(rgba).save(tmp.name)
+
     return tmp.name
 
 
 def make_severity_png(img_path):
-    """Grayscale 0-255 -> severity 0-3 -> palette, fully opaque over water."""
     img = Image.open(img_path).convert("L")
     arr = np.array(img).astype(np.float32)
-    valid    = arr > 0
+
+    valid = arr > 0
     severity = (arr / 255.0) * 3.0
+
     mean_sev = float(np.mean(severity[valid])) if valid.any() else 0.0
-    t     = np.clip(severity / 3.0, 0, 1)
+
+    t = np.clip(severity / 3.0, 0, 1)
     alpha = np.where(valid, 255, 0).astype(np.uint8)
-    rgba  = apply_palette(t, alpha)
+
+    rgba = apply_palette(t, alpha)
+
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     Image.fromarray(rgba).save(tmp.name)
+
     return tmp.name, mean_sev
 
 
 def make_pseudo_bi_png(img_path, bi_min=0.6, bi_max=3.5):
-    """Grayscale 0-255 -> BI_MIN-BI_MAX -> palette, fully opaque over water."""
-    img   = Image.open(img_path).convert("L")
-    arr   = np.array(img).astype(np.float32)
+    img = Image.open(img_path).convert("L")
+    arr = np.array(img).astype(np.float32)
+
     valid = arr > 0
-    bi    = bi_min + (arr / 255.0) * (bi_max - bi_min)
-    t     = np.clip((bi - bi_min) / (bi_max - bi_min), 0, 1)
+    bi = bi_min + (arr / 255.0) * (bi_max - bi_min)
+
+    t = np.clip((bi - bi_min) / (bi_max - bi_min), 0, 1)
     alpha = np.where(valid, 255, 0).astype(np.uint8)
-    rgba  = apply_palette(t, alpha)
+
+    rgba = apply_palette(t, alpha)
+
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     Image.fromarray(rgba).save(tmp.name)
+
     mean_bi = float(np.mean(bi[valid])) if valid.any() else 0.0
+
     return tmp.name, mean_bi
 
 
 def make_high_bloom_prob_png(img_path):
-    """Grayscale 0-255 -> probability 0-1 -> palette, fully opaque over water."""
-    img   = Image.open(img_path).convert("L")
-    arr   = np.array(img).astype(np.float32)
+    img = Image.open(img_path).convert("L")
+    arr = np.array(img).astype(np.float32)
+
     valid = arr > 0
-    prob  = arr / 255.0
-    t     = np.clip(prob, 0, 1)
+    prob = arr / 255.0
+
+    t = np.clip(prob, 0, 1)
     alpha = np.where(valid, 255, 0).astype(np.uint8)
-    rgba  = apply_palette(t, alpha)
+
+    rgba = apply_palette(t, alpha)
+
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     Image.fromarray(rgba).save(tmp.name)
+
     mean_prob = float(np.mean(prob[valid])) if valid.any() else 0.0
+
     return tmp.name, mean_prob
 
 
 def make_custom_legend():
-    grad = ("linear-gradient(to right,"
-            "rgb(0,0,139),"
-            "rgb(0,160,220),"
-            "rgb(0,210,210),"
-            "rgb(80,200,0),"
-            "rgb(255,220,0),"
-            "rgb(255,140,0),"
-            "rgb(120,0,0))")
-    bar = (f'<div style="height:16px;margin:6px 0 4px;background:{grad};'
-           f'border:1px solid #555;border-radius:3px;"></div>')
-    labels = ('<div style="display:flex;justify-content:space-between;font-size:11px;">'
-              '<span>Clean</span><span>Low</span><span>Medium</span><span>High</span>'
-              '</div>')
+    grad = (
+        "linear-gradient(to right,"
+        "rgb(0,0,139),"
+        "rgb(0,160,220),"
+        "rgb(0,210,210),"
+        "rgb(80,200,0),"
+        "rgb(255,220,0),"
+        "rgb(255,140,0),"
+        "rgb(120,0,0))"
+    )
+
+    bar = (
+        f'<div style="height:16px;margin:6px 0 4px;background:{grad};'
+        f'border:1px solid #555;border-radius:3px;"></div>'
+    )
+
+    labels = (
+        '<div style="display:flex;justify-content:space-between;font-size:11px;">'
+        '<span>Clean</span><span>Low</span><span>Medium</span><span>High</span>'
+        '</div>'
+    )
+
     return f"""
     <div style="position:fixed;bottom:30px;right:30px;z-index:9999;
     background:white;padding:12px;border:2px solid #444;border-radius:8px;
@@ -207,48 +250,98 @@ def make_custom_legend():
     """
 
 
+def add_layer_control_scroll(m, max_height="420px"):
+    css = f"""
+    <style>
+    .leaflet-control-layers-expanded {{
+        max-height: {max_height} !important;
+        overflow-y: auto !important;
+        overflow-x: hidden !important;
+        padding-right: 8px !important;
+    }}
+
+    .leaflet-control-layers-list {{
+        max-height: {max_height} !important;
+        overflow-y: auto !important;
+        overflow-x: hidden !important;
+    }}
+
+    .leaflet-control-layers-overlays label,
+    .leaflet-control-layers-base label {{
+        white-space: nowrap;
+        font-size: 13px;
+    }}
+    </style>
+    """
+
+    m.get_root().header.add_child(folium.Element(css))
+
+
 def make_timeline_chart(summary_df):
     spec = {
         "data": {"values": summary_df.to_dict("records")},
-        "width": 360, "height": 220,
+        "width": 360,
+        "height": 220,
         "layer": [
             {
                 "mark": {"type": "line", "color": "black", "opacity": 0.4},
                 "encoding": {
-                    "x": {"field": "date", "type": "ordinal", "sort": None,
-                          "axis": {"title": "Date"}},
-                    "y": {"field": "mean_severity", "type": "quantitative",
-                          "scale": {"domain": [0, 3]},
-                          "axis": {"title": "Bloom level", "values": [0.5,1.5,2.5],
-                                   "labelExpr": "datum.value<1?'Low':datum.value<2?'Medium':'High'"}}
+                    "x": {
+                        "field": "date",
+                        "type": "ordinal",
+                        "sort": None,
+                        "axis": {"title": "Date"}
+                    },
+                    "y": {
+                        "field": "mean_severity",
+                        "type": "quantitative",
+                        "scale": {"domain": [0, 3]},
+                        "axis": {
+                            "title": "Bloom level",
+                            "values": [0.5, 1.5, 2.5],
+                            "labelExpr": "datum.value<1?'Low':datum.value<2?'Medium':'High'"
+                        }
+                    }
                 }
             },
             {
                 "mark": {"type": "circle", "size": 170},
                 "encoding": {
-                    "x": {"field": "date", "type": "ordinal", "sort": None},
-                    "y": {"field": "mean_severity", "type": "quantitative",
-                          "scale": {"domain": [0, 3]}},
+                    "x": {
+                        "field": "date",
+                        "type": "ordinal",
+                        "sort": None
+                    },
+                    "y": {
+                        "field": "mean_severity",
+                        "type": "quantitative",
+                        "scale": {"domain": [0, 3]}
+                    },
                     "color": {
-                        "field": "severity_level", "type": "nominal",
-                        "scale": {"domain": ["Low","Medium","High"],
-                                  "range": ["green","orange","red"]},
+                        "field": "severity_level",
+                        "type": "nominal",
+                        "scale": {
+                            "domain": ["Low", "Medium", "High"],
+                            "range": ["green", "orange", "red"]
+                        },
                         "legend": {"title": "Bloom level"}
                     },
                     "tooltip": [
-                        {"field": "date",                "type": "ordinal",
-                         "title": "Date"},
-                        {"field": "severity_level",      "type": "nominal",
-                         "title": "Level"},
-                        {"field": "mean_bi",             "type": "quantitative",
-                         "title": "Mean BI",         "format": ".2f"},
-                        {"field": "mean_high_bloom_prob","type": "quantitative",
-                         "title": "High Bloom Prob", "format": ".2f"},
+                        {"field": "date", "type": "ordinal", "title": "Date"},
+                        {"field": "severity_level", "type": "nominal", "title": "Level"},
+                        {"field": "mean_bi", "type": "quantitative", "title": "Mean BI", "format": ".2f"},
+                        {
+                            "field": "mean_high_bloom_prob",
+                            "type": "quantitative",
+                            "title": "High Bloom Prob",
+                            "format": ".2f"
+                        },
                     ]
                 }
             }
         ]
     }
+
     st.vega_lite_chart(spec, use_container_width=True)
 
 
@@ -258,6 +351,7 @@ def make_timeline_chart(summary_df):
 all_files = list_files(HF_REPO_ID, HF_REPO_TYPE, HF_TOKEN)
 
 water_bodies = sorted({f.split("/")[0] for f in all_files if "/" in f})
+
 if not water_bodies:
     st.error("No water bodies found.")
     st.stop()
@@ -269,13 +363,16 @@ selected_body = st.selectbox("Choose water body", water_bodies)
 # FIND FILES
 # ============================================================
 def get_jpgs(prefix):
-    return sorted([f for f in all_files
-                   if f.startswith(f"{selected_body}/{prefix}/")
-                   and f.lower().endswith(".jpg")])
+    return sorted([
+        f for f in all_files
+        if f.startswith(f"{selected_body}/{prefix}/")
+        and f.lower().endswith(".jpg")
+    ])
 
-original_files   = get_jpgs("original")
-severity_files   = get_jpgs("severity")
-pseudo_bi_files  = get_jpgs("pseudo_bi")
+
+original_files = get_jpgs("original")
+severity_files = get_jpgs("severity")
+pseudo_bi_files = get_jpgs("pseudo_bi")
 high_bloom_files = get_jpgs("high_bloom_prob")
 
 if not severity_files:
@@ -288,23 +385,42 @@ if not severity_files:
 # ============================================================
 def download_with_sidecars(hf_paths):
     local = {}
+
     for hf_path in hf_paths:
         date = extract_date_label(hf_path)
-        local_jpg = download_file(HF_REPO_ID, hf_path, HF_REPO_TYPE, HF_TOKEN)
+
+        local_jpg = download_file(
+            HF_REPO_ID,
+            hf_path,
+            HF_REPO_TYPE,
+            HF_TOKEN
+        )
+
         for ext in [".jgw", ".prj"]:
             sidecar = os.path.splitext(hf_path)[0] + ext
+
             if sidecar in all_files:
-                download_file(HF_REPO_ID, sidecar, HF_REPO_TYPE, HF_TOKEN)
+                download_file(
+                    HF_REPO_ID,
+                    sidecar,
+                    HF_REPO_TYPE,
+                    HF_TOKEN
+                )
+
         local[date] = local_jpg
+
     return local
 
+
 with st.spinner("Downloading data..."):
-    orig_by_date       = download_with_sidecars(original_files)
-    sev_by_date        = download_with_sidecars(severity_files)
-    bi_by_date         = download_with_sidecars(pseudo_bi_files)
+    orig_by_date = download_with_sidecars(original_files)
+    sev_by_date = download_with_sidecars(severity_files)
+    bi_by_date = download_with_sidecars(pseudo_bi_files)
     high_bloom_by_date = download_with_sidecars(high_bloom_files)
 
+
 all_dates = sorted(sev_by_date.keys(), key=date_sort_key)
+
 if not all_dates:
     st.error("No dated files found.")
     st.stop()
@@ -314,24 +430,36 @@ if not all_dates:
 # BUILD MAP
 # ============================================================
 first_bounds = read_jgw_bounds(list(sev_by_date.values())[0])
+
 center_lat = (first_bounds[0][0] + first_bounds[1][0]) / 2
 center_lon = (first_bounds[0][1] + first_bounds[1][1]) / 2
 
-m = folium.Map(location=[center_lat, center_lon], zoom_start=18, tiles=None)
+m = folium.Map(
+    location=[center_lat, center_lon],
+    zoom_start=18,
+    tiles=None
+)
 
-folium.TileLayer("OpenStreetMap", name="OpenStreetMap", control=True).add_to(m)
+folium.TileLayer(
+    "OpenStreetMap",
+    name="OpenStreetMap",
+    control=True
+).add_to(m)
+
 folium.TileLayer(
     tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-    attr="Esri", name="Esri World Imagery", control=True,
+    attr="Esri",
+    name="Esri World Imagery",
+    control=True,
 ).add_to(m)
+
 
 summary_rows = []
 
 for i, date in enumerate(all_dates):
-    show_first = (i == 0)
+    show_first = i == 0
     bounds = read_jgw_bounds(sev_by_date[date])
 
-    # -- Original --
     if date in orig_by_date:
         ImageOverlay(
             name=f"{date} | Original",
@@ -342,8 +470,8 @@ for i, date in enumerate(all_dates):
             show=show_first,
         ).add_to(m)
 
-    # -- Bloom Severity --
     sev_png, mean_sev = make_severity_png(sev_by_date[date])
+
     ImageOverlay(
         name=f"{date} | Bloom Severity",
         image=sev_png,
@@ -353,10 +481,11 @@ for i, date in enumerate(all_dates):
         show=False,
     ).add_to(m)
 
-    # -- Pseudo-BI --
     mean_bi = 0.0
+
     if date in bi_by_date:
         bi_png, mean_bi = make_pseudo_bi_png(bi_by_date[date])
+
         ImageOverlay(
             name=f"{date} | Pseudo-BI",
             image=bi_png,
@@ -366,10 +495,11 @@ for i, date in enumerate(all_dates):
             show=False,
         ).add_to(m)
 
-    # -- High Bloom Probability --
     mean_high_prob = 0.0
+
     if date in high_bloom_by_date:
         hp_png, mean_high_prob = make_high_bloom_prob_png(high_bloom_by_date[date])
+
         ImageOverlay(
             name=f"{date} | High Bloom Probability",
             image=hp_png,
@@ -387,7 +517,10 @@ for i, date in enumerate(all_dates):
         "mean_high_bloom_prob": mean_high_prob,
     })
 
+
 m.get_root().html.add_child(folium.Element(make_custom_legend()))
+
+add_layer_control_scroll(m, max_height="420px")
 folium.LayerControl(collapsed=False).add_to(m)
 
 
@@ -397,26 +530,36 @@ folium.LayerControl(collapsed=False).add_to(m)
 col1, col2 = st.columns([3, 1])
 
 with col1:
-    st.caption("Use the layer control (top-right of map) to toggle: "
-               "**Original**, **Bloom Severity**, **Pseudo-BI**, **High Bloom Probability**.")
+    st.caption(
+        "Use the layer control, top-right of map, to toggle: "
+        "**Original**, **Bloom Severity**, **Pseudo-BI**, **High Bloom Probability**."
+    )
+
     st_folium(m, width=1000, height=700)
 
 with col2:
     st.subheader("Bloom Timeline")
+
     summary_df = pd.DataFrame(summary_rows)
 
     st.dataframe(
-        summary_df[["date","severity_level","mean_bi","mean_high_bloom_prob"]].rename(columns={
+        summary_df[
+            ["date", "severity_level", "mean_bi", "mean_high_bloom_prob"]
+        ].rename(columns={
             "date": "Date",
             "severity_level": "Level",
             "mean_bi": "Mean BI",
             "mean_high_bloom_prob": "High Bloom Prob",
         }),
         hide_index=True,
+        use_container_width=True,
     )
 
     make_timeline_chart(summary_df)
 
-    st.metric("Latest Bloom Level",     summary_df.iloc[-1]["severity_level"])
-    st.metric("Latest Mean BI",         f"{summary_df.iloc[-1]['mean_bi']:.2f}")
-    st.metric("Latest High Bloom Prob", f"{summary_df.iloc[-1]['mean_high_bloom_prob']:.2f}")
+    st.metric("Latest Bloom Level", summary_df.iloc[-1]["severity_level"])
+    st.metric("Latest Mean BI", f"{summary_df.iloc[-1]['mean_bi']:.2f}")
+    st.metric(
+        "Latest High Bloom Prob",
+        f"{summary_df.iloc[-1]['mean_high_bloom_prob']:.2f}"
+    )
