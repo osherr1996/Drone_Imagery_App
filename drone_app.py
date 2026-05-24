@@ -37,31 +37,97 @@ if not HF_TOKEN:
 
 
 # ============================================================
-# COLOR PALETTE
+# BI BLOOM LEVEL SCALE
 # ============================================================
-PALETTE = np.array([
-    [0,   0,   139],
-    [0,   80,  200],
-    [0,   160, 220],
-    [0,   210, 210],
-    [0,   200, 120],
-    [80,  200,  0],
-    [200, 220,  0],
-    [255, 220,  0],
-    [255, 140,  0],
-    [200,  30,  0],
-    [120,   0,  0],
+BI_MIN = 0.0
+BI_MAX = 5.0
+
+BI_THRESHOLDS = {
+    "Clean": 0.70,
+    "Low": 1.07,
+    "Medium": 1.35,
+    "High": 1.70,
+    "Very High": 2.50,
+    "Extreme": 5.00,
+}
+
+# Clean -> Low -> Medium -> High -> Very High -> Extreme
+BI_LEVEL_COLORS = np.array([
+    [0,   110, 110],   # Clean
+    [120, 190, 80],    # Low
+    [255, 210, 0],     # Medium
+    [255, 120, 70],    # High
+    [220, 0,   80],    # Very High
+    [100, 0,   0],     # Extreme
 ], dtype=np.float32)
 
 
-def apply_palette(t_arr, alpha_arr):
-    n = len(PALETTE) - 1
+# Severity palette remains separate, because severity is 0-3
+SEVERITY_PALETTE = np.array([
+    [0,   0,   139],
+    [0,   160, 220],
+    [0,   210, 210],
+    [80,  200, 0],
+    [255, 220, 0],
+    [255, 140, 0],
+    [120, 0,   0],
+], dtype=np.float32)
+
+
+def apply_continuous_palette(t_arr, alpha_arr, palette):
+    n = len(palette) - 1
     idx = np.clip(t_arr * n, 0, n)
     lo = np.floor(idx).astype(int)
     hi = np.clip(lo + 1, 0, n)
     frac = (idx - lo)[..., None]
-    rgb = (PALETTE[lo] * (1 - frac) + PALETTE[hi] * frac).astype(np.uint8)
+    rgb = (palette[lo] * (1 - frac) + palette[hi] * frac).astype(np.uint8)
     return np.concatenate([rgb, alpha_arr[..., None]], axis=-1)
+
+
+def bi_to_level_t(bi):
+    """
+    Convert BI to visual scale using fixed bloom-level thresholds:
+
+    0.00-0.70  Clean
+    0.70-1.07  Low
+    1.07-1.35  Medium
+    1.35-1.70  High
+    1.70-2.50  Very High
+    2.50-5.00  Extreme
+    """
+    bi = np.clip(bi, BI_MIN, BI_MAX)
+    t = np.zeros_like(bi, dtype=np.float32)
+
+    breaks = np.array([0.0, 0.70, 1.07, 1.35, 1.70, 2.50, 5.00], dtype=np.float32)
+    visual = np.linspace(0.0, 1.0, len(breaks))
+
+    for i in range(len(breaks) - 1):
+        lo = breaks[i]
+        hi = breaks[i + 1]
+        m = (bi >= lo) & (bi <= hi)
+
+        if hi > lo:
+            local = (bi[m] - lo) / (hi - lo)
+        else:
+            local = 0
+
+        t[m] = visual[i] + local * (visual[i + 1] - visual[i])
+
+    return np.clip(t, 0, 1)
+
+
+def bi_level_category(mean_bi):
+    if mean_bi < 0.70:
+        return "Clean"
+    if mean_bi < 1.07:
+        return "Low"
+    if mean_bi < 1.35:
+        return "Medium"
+    if mean_bi < 1.70:
+        return "High"
+    if mean_bi < 2.50:
+        return "Very High"
+    return "Extreme"
 
 
 # ============================================================
@@ -152,6 +218,9 @@ def make_original_png(img_path):
 
 
 def make_severity_png(img_path):
+    """
+    Severity is still shown on its own 0-3 severity scale.
+    """
     img = Image.open(img_path).convert("L")
     arr = np.array(img).astype(np.float32)
 
@@ -163,7 +232,7 @@ def make_severity_png(img_path):
     t = np.clip(severity / 3.0, 0, 1)
     alpha = np.where(valid, 255, 0).astype(np.uint8)
 
-    rgba = apply_palette(t, alpha)
+    rgba = apply_continuous_palette(t, alpha, SEVERITY_PALETTE)
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     Image.fromarray(rgba).save(tmp.name)
@@ -171,27 +240,43 @@ def make_severity_png(img_path):
     return tmp.name, mean_sev
 
 
-def make_pseudo_bi_png(img_path, bi_min=0.6, bi_max=3.5):
+def make_pseudo_bi_png(img_path, bi_min=0.0, bi_max=5.0):
+    """
+    Pseudo-BI is colored using fixed BI bloom-level thresholds:
+
+    Clean      0.00-0.70
+    Low        0.70-1.07
+    Medium     1.07-1.35
+    High       1.35-1.70
+    Very High  1.70-2.50
+    Extreme    2.50-5.00
+    """
     img = Image.open(img_path).convert("L")
     arr = np.array(img).astype(np.float32)
 
     valid = arr > 0
-    bi = bi_min + (arr / 255.0) * (bi_max - bi_min)
 
-    t = np.clip((bi - bi_min) / (bi_max - bi_min), 0, 1)
+    bi = bi_min + (arr / 255.0) * (bi_max - bi_min)
+    bi = np.clip(bi, BI_MIN, BI_MAX)
+
+    t = bi_to_level_t(bi)
     alpha = np.where(valid, 255, 0).astype(np.uint8)
 
-    rgba = apply_palette(t, alpha)
+    rgba = apply_continuous_palette(t, alpha, BI_LEVEL_COLORS)
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     Image.fromarray(rgba).save(tmp.name)
 
     mean_bi = float(np.mean(bi[valid])) if valid.any() else 0.0
+    mean_bi_level = bi_level_category(mean_bi)
 
-    return tmp.name, mean_bi
+    return tmp.name, mean_bi, mean_bi_level
 
 
 def make_high_bloom_prob_png(img_path):
+    """
+    Probability remains 0-1 probability scale.
+    """
     img = Image.open(img_path).convert("L")
     arr = np.array(img).astype(np.float32)
 
@@ -201,7 +286,7 @@ def make_high_bloom_prob_png(img_path):
     t = np.clip(prob, 0, 1)
     alpha = np.where(valid, 255, 0).astype(np.uint8)
 
-    rgba = apply_palette(t, alpha)
+    rgba = apply_continuous_palette(t, alpha, SEVERITY_PALETTE)
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     Image.fromarray(rgba).save(tmp.name)
@@ -213,38 +298,40 @@ def make_high_bloom_prob_png(img_path):
 
 def make_custom_legend():
     grad = (
-        "linear-gradient(to right,"
-        "rgb(0,0,139),"
-        "rgb(0,160,220),"
-        "rgb(0,210,210),"
-        "rgb(80,200,0),"
-        "rgb(255,220,0),"
-        "rgb(255,140,0),"
-        "rgb(120,0,0))"
-    )
-
-    bar = (
-        f'<div style="height:16px;margin:6px 0 4px;background:{grad};'
-        f'border:1px solid #555;border-radius:3px;"></div>'
-    )
-
-    labels = (
-        '<div style="display:flex;justify-content:space-between;font-size:11px;">'
-        '<span>Clean</span><span>Low</span><span>Medium</span><span>High</span>'
-        '</div>'
+        "linear-gradient(to top,"
+        "rgb(0,110,110),"
+        "rgb(120,190,80),"
+        "rgb(255,210,0),"
+        "rgb(255,120,70),"
+        "rgb(220,0,80),"
+        "rgb(100,0,0))"
     )
 
     return f"""
     <div style="position:fixed;bottom:30px;right:30px;z-index:9999;
     background:white;padding:12px;border:2px solid #444;border-radius:8px;
-    font-size:13px;width:230px;box-shadow:0 2px 8px rgba(0,0,0,0.25);">
-    <b>Bloom intensity</b>
-    {bar}{labels}
+    font-size:13px;width:260px;box-shadow:0 2px 8px rgba(0,0,0,0.25);">
+
+    <b>Bloom Index level</b>
+
+    <div style="display:flex;gap:10px;margin-top:8px;">
+        <div style="width:18px;height:180px;background:{grad};
+        border:1px solid #333;border-radius:2px;"></div>
+
+        <div style="font-size:12px;line-height:30px;">
+            <div><b>Extreme</b> ≥ 2.50</div>
+            <div><b>Very High</b> 1.70-2.50</div>
+            <div><b>High</b> 1.35-1.70</div>
+            <div><b>Medium</b> 1.07-1.35</div>
+            <div><b>Low</b> 0.70-1.07</div>
+            <div><b>Clean</b> 0.00-0.70</div>
+        </div>
+    </div>
+
     <hr style="margin:8px 0;"/>
     <div style="font-size:11px;color:#555;">
-      Dark blue = clean water<br>
-      Dark red = high bloom<br>
-      Same scale for all 3 products
+      BI layers use fixed bloom-index thresholds.<br>
+      Severity and probability layers keep their own native scales.
     </div>
     </div>
     """
@@ -293,14 +380,10 @@ def make_timeline_chart(summary_df):
                         "axis": {"title": "Date"}
                     },
                     "y": {
-                        "field": "mean_severity",
+                        "field": "mean_bi",
                         "type": "quantitative",
-                        "scale": {"domain": [0, 3]},
-                        "axis": {
-                            "title": "Bloom level",
-                            "values": [0.5, 1.5, 2.5],
-                            "labelExpr": "datum.value<1?'Low':datum.value<2?'Medium':'High'"
-                        }
+                        "scale": {"domain": [0, 5]},
+                        "axis": {"title": "Mean Bloom Index"}
                     }
                 }
             },
@@ -313,23 +396,38 @@ def make_timeline_chart(summary_df):
                         "sort": None
                     },
                     "y": {
-                        "field": "mean_severity",
+                        "field": "mean_bi",
                         "type": "quantitative",
-                        "scale": {"domain": [0, 3]}
+                        "scale": {"domain": [0, 5]}
                     },
                     "color": {
-                        "field": "severity_level",
+                        "field": "mean_bi_level",
                         "type": "nominal",
                         "scale": {
-                            "domain": ["Low", "Medium", "High"],
-                            "range": ["green", "orange", "red"]
+                            "domain": [
+                                "Clean",
+                                "Low",
+                                "Medium",
+                                "High",
+                                "Very High",
+                                "Extreme"
+                            ],
+                            "range": [
+                                "teal",
+                                "yellowgreen",
+                                "gold",
+                                "coral",
+                                "crimson",
+                                "darkred"
+                            ]
                         },
-                        "legend": {"title": "Bloom level"}
+                        "legend": {"title": "BI level"}
                     },
                     "tooltip": [
                         {"field": "date", "type": "ordinal", "title": "Date"},
-                        {"field": "severity_level", "type": "nominal", "title": "Level"},
                         {"field": "mean_bi", "type": "quantitative", "title": "Mean BI", "format": ".2f"},
+                        {"field": "mean_bi_level", "type": "nominal", "title": "BI Level"},
+                        {"field": "severity_level", "type": "nominal", "title": "Severity Level"},
                         {
                             "field": "mean_high_bloom_prob",
                             "type": "quantitative",
@@ -482,12 +580,17 @@ for i, date in enumerate(all_dates):
     ).add_to(m)
 
     mean_bi = 0.0
+    mean_bi_level = "Clean"
 
     if date in bi_by_date:
-        bi_png, mean_bi = make_pseudo_bi_png(bi_by_date[date])
+        bi_png, mean_bi, mean_bi_level = make_pseudo_bi_png(
+            bi_by_date[date],
+            bi_min=BI_MIN,
+            bi_max=BI_MAX
+        )
 
         ImageOverlay(
-            name=f"{date} | Pseudo-BI",
+            name=f"{date} | Bloom Index",
             image=bi_png,
             bounds=bounds,
             opacity=1.0,
@@ -514,6 +617,7 @@ for i, date in enumerate(all_dates):
         "mean_severity": mean_sev,
         "severity_level": severity_category(mean_sev),
         "mean_bi": mean_bi,
+        "mean_bi_level": mean_bi_level,
         "mean_high_bloom_prob": mean_high_prob,
     })
 
@@ -532,7 +636,7 @@ col1, col2 = st.columns([3, 1])
 with col1:
     st.caption(
         "Use the layer control, top-right of map, to toggle: "
-        "**Original**, **Bloom Severity**, **Pseudo-BI**, **High Bloom Probability**."
+        "**Original**, **Bloom Severity**, **Bloom Index**, **High Bloom Probability**."
     )
 
     st_folium(m, width=1000, height=700)
@@ -544,11 +648,18 @@ with col2:
 
     st.dataframe(
         summary_df[
-            ["date", "severity_level", "mean_bi", "mean_high_bloom_prob"]
+            [
+                "date",
+                "mean_bi",
+                "mean_bi_level",
+                "severity_level",
+                "mean_high_bloom_prob"
+            ]
         ].rename(columns={
             "date": "Date",
-            "severity_level": "Level",
             "mean_bi": "Mean BI",
+            "mean_bi_level": "BI Level",
+            "severity_level": "Severity Level",
             "mean_high_bloom_prob": "High Bloom Prob",
         }),
         hide_index=True,
@@ -557,8 +668,9 @@ with col2:
 
     make_timeline_chart(summary_df)
 
-    st.metric("Latest Bloom Level", summary_df.iloc[-1]["severity_level"])
+    st.metric("Latest BI Level", summary_df.iloc[-1]["mean_bi_level"])
     st.metric("Latest Mean BI", f"{summary_df.iloc[-1]['mean_bi']:.2f}")
+    st.metric("Latest Severity Level", summary_df.iloc[-1]["severity_level"])
     st.metric(
         "Latest High Bloom Prob",
         f"{summary_df.iloc[-1]['mean_high_bloom_prob']:.2f}"
