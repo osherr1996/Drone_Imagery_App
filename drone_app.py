@@ -42,12 +42,14 @@ if not HF_TOKEN:
 BI_MIN = 0.0
 BI_MAX = 5.0
 
+# More conservative BI bloom-level scale.
+# This avoids over-classifying low/moderate Sentinel-style BI values as severe bloom.
 BI_THRESHOLDS = {
-    "Clean": 0.70,
-    "Low": 1.07,
-    "Medium": 1.35,
-    "High": 1.70,
-    "Very High": 2.50,
+    "Clean": 0.90,
+    "Low": 1.30,
+    "Medium": 1.70,
+    "High": 2.30,
+    "Very High": 3.50,
     "Extreme": 5.00,
 }
 
@@ -88,17 +90,17 @@ def bi_to_level_t(bi):
     """
     Convert BI to visual scale using fixed bloom-level thresholds:
 
-    0.00-0.70  Clean
-    0.70-1.07  Low
-    1.07-1.35  Medium
-    1.35-1.70  High
-    1.70-2.50  Very High
-    2.50-5.00  Extreme
+    0.00-0.90  Clean
+    0.90-1.30  Low
+    1.30-1.70  Medium
+    1.70-2.30  High
+    2.30-3.50  Very High
+    3.50-5.00  Extreme
     """
     bi = np.clip(bi, BI_MIN, BI_MAX)
     t = np.zeros_like(bi, dtype=np.float32)
 
-    breaks = np.array([0.0, 0.70, 1.07, 1.35, 1.70, 2.50, 5.00], dtype=np.float32)
+    breaks = np.array([0.0, 0.90, 1.30, 1.70, 2.30, 3.50, 5.00], dtype=np.float32)
     visual = np.linspace(0.0, 1.0, len(breaks))
 
     for i in range(len(breaks) - 1):
@@ -117,15 +119,15 @@ def bi_to_level_t(bi):
 
 
 def bi_level_category(mean_bi):
-    if mean_bi < 0.70:
+    if mean_bi < 0.90:
         return "Clean"
-    if mean_bi < 1.07:
+    if mean_bi < 1.30:
         return "Low"
-    if mean_bi < 1.35:
-        return "Medium"
     if mean_bi < 1.70:
+        return "Medium"
+    if mean_bi < 2.30:
         return "High"
-    if mean_bi < 2.50:
+    if mean_bi < 3.50:
         return "Very High"
     return "Extreme"
 
@@ -244,12 +246,12 @@ def make_pseudo_bi_png(img_path, bi_min=0.0, bi_max=5.0):
     """
     Pseudo-BI is colored using fixed BI bloom-level thresholds:
 
-    Clean      0.00-0.70
-    Low        0.70-1.07
-    Medium     1.07-1.35
-    High       1.35-1.70
-    Very High  1.70-2.50
-    Extreme    2.50-5.00
+    Clean      0.00-0.90
+    Low        0.90-1.30
+    Medium     1.30-1.70
+    High       1.70-2.30
+    Very High  2.30-3.50
+    Extreme    3.50-5.00
     """
     img = Image.open(img_path).convert("L")
     arr = np.array(img).astype(np.float32)
@@ -319,18 +321,18 @@ def make_custom_legend():
         border:1px solid #333;border-radius:2px;"></div>
 
         <div style="font-size:12px;line-height:30px;">
-            <div><b>Extreme</b> ≥ 2.50</div>
-            <div><b>Very High</b> 1.70-2.50</div>
-            <div><b>High</b> 1.35-1.70</div>
-            <div><b>Medium</b> 1.07-1.35</div>
-            <div><b>Low</b> 0.70-1.07</div>
-            <div><b>Clean</b> 0.00-0.70</div>
+            <div><b>Extreme</b> ≥ 3.50</div>
+            <div><b>Very High</b> 2.30-3.50</div>
+            <div><b>High</b> 1.70-2.30</div>
+            <div><b>Medium</b> 1.30-1.70</div>
+            <div><b>Low</b> 0.90-1.30</div>
+            <div><b>Clean</b> 0.00-0.90</div>
         </div>
     </div>
 
     <hr style="margin:8px 0;"/>
     <div style="font-size:11px;color:#555;">
-      BI layers use fixed bloom-index thresholds.<br>
+      BI layers use conservative bloom-index thresholds.<br>
       Severity and probability layers keep their own native scales.
     </div>
     </div>
