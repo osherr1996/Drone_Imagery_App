@@ -14,10 +14,16 @@ from pyproj import Transformer
 from huggingface_hub import list_repo_files, hf_hub_download
 
 
+# ============================================================
+# STREAMLIT CONFIG
+# ============================================================
 st.set_page_config(page_title="Relative Bloom Severity Viewer", layout="wide")
 st.title("Reservoir Relative Bloom Severity Viewer")
 
 
+# ============================================================
+# HUGGING FACE CONFIG
+# ============================================================
 HF_REPO_ID = "osherr/drone_app"
 HF_REPO_TYPE = "dataset"
 
@@ -30,23 +36,30 @@ if not HF_TOKEN:
     st.stop()
 
 
+# ============================================================
+# BLUE -> YELLOW -> RED PALETTE
+# ============================================================
 SEVERITY_PALETTE = np.array([
-    [0,   0,   139],
-    [0,   160, 220],
-    [0,   210, 210],
-    [80,  200, 0],
-    [255, 220, 0],
-    [255, 140, 0],
-    [120, 0,   0],
+    [0,   80,  220],   # Low - blue
+    [80,  170, 255],   # light blue
+    [255, 235, 0],     # Low/Medium - yellow
+    [255, 180, 0],     # orange-yellow
+    [255, 90,  0],     # orange-red
+    [220, 0,   0],     # red
+    [120, 0,   0],     # dark red
 ], dtype=np.float32)
 
 
+# ============================================================
+# HELPERS
+# ============================================================
 def apply_continuous_palette(t_arr, alpha_arr, palette):
     n = len(palette) - 1
     idx = np.clip(t_arr * n, 0, n)
     lo = np.floor(idx).astype(int)
     hi = np.clip(lo + 1, 0, n)
     frac = (idx - lo)[..., None]
+
     rgb = (palette[lo] * (1 - frac) + palette[hi] * frac).astype(np.uint8)
     return np.concatenate([rgb, alpha_arr[..., None]], axis=-1)
 
@@ -68,16 +81,23 @@ def download_file(repo_id, filename, repo_type, token):
 
 def extract_date_label(path):
     name = os.path.basename(path)
+
     m = re.search(r"_(\d{2}_\d{2}_\d{4})_", name)
-    return m.group(1) if m else name
+    if m:
+        return m.group(1)
+
+    m = re.search(r"(\d{2}_\d{2}_\d{4})", name)
+    if m:
+        return m.group(1)
+
+    return name
 
 
-def date_sort_key(d):
+def parse_date(date_str):
     try:
-        day, month, year = d.split("_")
-        return int(year), int(month), int(day)
+        return pd.to_datetime(date_str, format="%d_%m_%Y")
     except Exception:
-        return 9999, 99, 99
+        return pd.NaT
 
 
 def read_jgw_bounds(img_path):
@@ -99,10 +119,10 @@ def read_jgw_bounds(img_path):
     xmax = xmin + pixel_size_x * W
     ymin = ymax + pixel_size_y * H
 
-    t = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+    transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
 
-    lon_min, lat_min = t.transform(xmin, ymin)
-    lon_max, lat_max = t.transform(xmax, ymax)
+    lon_min, lat_min = transformer.transform(xmin, ymin)
+    lon_max, lat_max = transformer.transform(xmax, ymax)
 
     return [[lat_min, lon_min], [lat_max, lon_max]]
 
@@ -158,12 +178,9 @@ def make_severity_png(img_path):
 def make_severity_legend():
     grad = (
         "linear-gradient(to top,"
-        "rgb(0,0,139),"
-        "rgb(0,160,220),"
-        "rgb(0,210,210),"
-        "rgb(80,200,0),"
-        "rgb(255,220,0),"
-        "rgb(255,140,0),"
+        "rgb(0,80,220),"
+        "rgb(255,235,0),"
+        "rgb(220,0,0),"
         "rgb(120,0,0))"
     )
 
@@ -221,8 +238,12 @@ def add_layer_control_scroll(m, max_height="420px"):
 
 
 def make_timeline_chart(summary_df):
+    chart_df = summary_df.copy()
+    chart_df["date_label"] = chart_df["date"]
+    chart_df["date_sort"] = chart_df["date_dt"].dt.strftime("%Y-%m-%d")
+
     spec = {
-        "data": {"values": summary_df.to_dict("records")},
+        "data": {"values": chart_df.to_dict("records")},
         "width": 360,
         "height": 220,
         "layer": [
@@ -230,9 +251,9 @@ def make_timeline_chart(summary_df):
                 "mark": {"type": "line", "color": "black", "opacity": 0.4},
                 "encoding": {
                     "x": {
-                        "field": "date",
+                        "field": "date_label",
                         "type": "ordinal",
-                        "sort": None,
+                        "sort": {"field": "date_sort", "order": "ascending"},
                         "axis": {"title": "Date"}
                     },
                     "y": {
@@ -247,9 +268,9 @@ def make_timeline_chart(summary_df):
                 "mark": {"type": "circle", "size": 170},
                 "encoding": {
                     "x": {
-                        "field": "date",
+                        "field": "date_label",
                         "type": "ordinal",
-                        "sort": None
+                        "sort": {"field": "date_sort", "order": "ascending"}
                     },
                     "y": {
                         "field": "mean_severity",
@@ -261,12 +282,12 @@ def make_timeline_chart(summary_df):
                         "type": "nominal",
                         "scale": {
                             "domain": ["Low", "Medium", "High"],
-                            "range": ["#00a0dc", "#ffd700", "#b00000"]
+                            "range": ["#0050dc", "#ffeb00", "#dc0000"]
                         },
                         "legend": {"title": "Severity"}
                     },
                     "tooltip": [
-                        {"field": "date", "type": "ordinal", "title": "Date"},
+                        {"field": "date_label", "type": "ordinal", "title": "Date"},
                         {
                             "field": "mean_severity",
                             "type": "quantitative",
@@ -287,6 +308,9 @@ def make_timeline_chart(summary_df):
     st.vega_lite_chart(spec, use_container_width=True)
 
 
+# ============================================================
+# LOAD FILE LIST
+# ============================================================
 all_files = list_files(HF_REPO_ID, HF_REPO_TYPE, HF_TOKEN)
 
 water_bodies = sorted({f.split("/")[0] for f in all_files if "/" in f})
@@ -314,6 +338,9 @@ if not severity_files:
     st.stop()
 
 
+# ============================================================
+# DOWNLOAD FILES
+# ============================================================
 def download_with_sidecars(hf_paths):
     local = {}
 
@@ -348,14 +375,20 @@ with st.spinner("Downloading data..."):
     sev_by_date = download_with_sidecars(severity_files)
 
 
-all_dates = sorted(sev_by_date.keys(), key=date_sort_key)
+all_dates = sorted(
+    sev_by_date.keys(),
+    key=lambda d: parse_date(d) if pd.notna(parse_date(d)) else pd.Timestamp.max
+)
 
 if not all_dates:
     st.error("No dated files found.")
     st.stop()
 
 
-first_bounds = read_jgw_bounds(list(sev_by_date.values())[0])
+# ============================================================
+# BUILD MAP
+# ============================================================
+first_bounds = read_jgw_bounds(sev_by_date[all_dates[0]])
 
 center_lat = (first_bounds[0][0] + first_bounds[1][0]) / 2
 center_lon = (first_bounds[0][1] + first_bounds[1][1]) / 2
@@ -409,17 +442,20 @@ for i, date in enumerate(all_dates):
 
     summary_rows.append({
         "date": date,
+        "date_dt": parse_date(date),
         "mean_severity": mean_sev,
         "severity_level": severity_category(mean_sev),
     })
 
 
 m.get_root().html.add_child(folium.Element(make_severity_legend()))
-
 add_layer_control_scroll(m, max_height="420px")
 folium.LayerControl(collapsed=False).add_to(m)
 
 
+# ============================================================
+# DISPLAY APP
+# ============================================================
 col1, col2 = st.columns([3, 1])
 
 with col1:
@@ -434,6 +470,7 @@ with col2:
     st.subheader("Relative Severity Timeline")
 
     summary_df = pd.DataFrame(summary_rows)
+    summary_df = summary_df.sort_values("date_dt").reset_index(drop=True)
 
     st.dataframe(
         summary_df[
@@ -453,5 +490,7 @@ with col2:
 
     make_timeline_chart(summary_df)
 
-    st.metric("Latest Severity Level", summary_df.iloc[-1]["severity_level"])
-    st.metric("Latest Mean Severity", f"{summary_df.iloc[-1]['mean_severity']:.2f}")
+    latest = summary_df.iloc[-1]
+
+    st.metric("Latest Severity Level", latest["severity_level"])
+    st.metric("Latest Mean Severity", f"{latest['mean_severity']:.2f}")
