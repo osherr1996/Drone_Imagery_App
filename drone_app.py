@@ -3,7 +3,7 @@ import re
 import tempfile
 import numpy as np
 import pandas as pd
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 
 import streamlit as st
 import folium
@@ -14,16 +14,10 @@ from pyproj import Transformer
 from huggingface_hub import list_repo_files, hf_hub_download
 
 
-# ============================================================
-# STREAMLIT CONFIG
-# ============================================================
 st.set_page_config(page_title="Relative Bloom Severity Viewer", layout="wide")
 st.title("Reservoir Relative Bloom Severity Viewer")
 
 
-# ============================================================
-# HUGGING FACE CONFIG
-# ============================================================
 HF_REPO_ID = "osherr/drone_app"
 HF_REPO_TYPE = "dataset"
 
@@ -36,13 +30,10 @@ if not HF_TOKEN:
     st.stop()
 
 
-# ============================================================
-# BLUE -> YELLOW -> RED PALETTE
-# ============================================================
 SEVERITY_PALETTE = np.array([
-    [0,   80,  220],   # Low - blue
+    [0,   80,  220],   # blue
     [80,  170, 255],   # light blue
-    [255, 235, 0],     # Low/Medium - yellow
+    [255, 235, 0],     # yellow
     [255, 180, 0],     # orange-yellow
     [255, 90,  0],     # orange-red
     [220, 0,   0],     # red
@@ -50,16 +41,12 @@ SEVERITY_PALETTE = np.array([
 ], dtype=np.float32)
 
 
-# ============================================================
-# HELPERS
-# ============================================================
 def apply_continuous_palette(t_arr, alpha_arr, palette):
     n = len(palette) - 1
     idx = np.clip(t_arr * n, 0, n)
     lo = np.floor(idx).astype(int)
     hi = np.clip(lo + 1, 0, n)
     frac = (idx - lo)[..., None]
-
     rgb = (palette[lo] * (1 - frac) + palette[hi] * frac).astype(np.uint8)
     return np.concatenate([rgb, alpha_arr[..., None]], axis=-1)
 
@@ -173,6 +160,56 @@ def make_severity_png(img_path):
     Image.fromarray(rgba).save(tmp.name)
 
     return tmp.name, mean_sev
+
+
+def create_side_by_side_download(original_path, severity_path, date):
+    original = Image.open(original_path).convert("RGB")
+    heatmap_png, _ = make_severity_png(severity_path)
+    heatmap = Image.open(heatmap_png).convert("RGB")
+
+    target_h = min(original.height, heatmap.height, 900)
+
+    def resize_keep_ratio(img, target_height):
+        scale = target_height / img.height
+        new_w = int(img.width * scale)
+        return img.resize((new_w, target_height), Image.LANCZOS)
+
+    original = resize_keep_ratio(original, target_h)
+    heatmap = resize_keep_ratio(heatmap, target_h)
+
+    title_h = 55
+    gap = 20
+    margin = 20
+
+    out_w = original.width + heatmap.width + gap + margin * 2
+    out_h = target_h + title_h + margin * 2
+
+    canvas = Image.new("RGB", (out_w, out_h), "white")
+    draw = ImageDraw.Draw(canvas)
+
+    try:
+        font_title = ImageFont.truetype("arial.ttf", 26)
+        font_label = ImageFont.truetype("arial.ttf", 22)
+    except Exception:
+        font_title = ImageFont.load_default()
+        font_label = ImageFont.load_default()
+
+    draw.text((margin, 12), f"Original and Relative Severity | {date}", fill="black", font=font_title)
+
+    x1 = margin
+    y = margin + title_h
+    x2 = x1 + original.width + gap
+
+    canvas.paste(original, (x1, y))
+    canvas.paste(heatmap, (x2, y))
+
+    draw.text((x1, y - 25), "Original", fill="black", font=font_label)
+    draw.text((x2, y - 25), "Relative Severity Heatmap", fill="black", font=font_label)
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+    canvas.save(tmp.name)
+
+    return tmp.name
 
 
 def make_severity_legend():
@@ -308,9 +345,6 @@ def make_timeline_chart(summary_df):
     st.vega_lite_chart(spec, use_container_width=True)
 
 
-# ============================================================
-# LOAD FILE LIST
-# ============================================================
 all_files = list_files(HF_REPO_ID, HF_REPO_TYPE, HF_TOKEN)
 
 water_bodies = sorted({f.split("/")[0] for f in all_files if "/" in f})
@@ -338,9 +372,6 @@ if not severity_files:
     st.stop()
 
 
-# ============================================================
-# DOWNLOAD FILES
-# ============================================================
 def download_with_sidecars(hf_paths):
     local = {}
 
@@ -385,9 +416,6 @@ if not all_dates:
     st.stop()
 
 
-# ============================================================
-# BUILD MAP
-# ============================================================
 first_bounds = read_jgw_bounds(sev_by_date[all_dates[0]])
 
 center_lat = (first_bounds[0][0] + first_bounds[1][0]) / 2
@@ -453,9 +481,6 @@ add_layer_control_scroll(m, max_height="420px")
 folium.LayerControl(collapsed=False).add_to(m)
 
 
-# ============================================================
-# DISPLAY APP
-# ============================================================
 col1, col2 = st.columns([3, 1])
 
 with col1:
@@ -494,3 +519,31 @@ with col2:
 
     st.metric("Latest Severity Level", latest["severity_level"])
     st.metric("Latest Mean Severity", f"{latest['mean_severity']:.2f}")
+
+    st.divider()
+    st.subheader("Download Image")
+
+    downloadable_dates = [d for d in all_dates if d in orig_by_date and d in sev_by_date]
+
+    if downloadable_dates:
+        selected_download_date = st.selectbox(
+            "Choose date to download",
+            downloadable_dates,
+            index=len(downloadable_dates) - 1
+        )
+
+        download_png_path = create_side_by_side_download(
+            orig_by_date[selected_download_date],
+            sev_by_date[selected_download_date],
+            selected_download_date
+        )
+
+        with open(download_png_path, "rb") as f:
+            st.download_button(
+                label="Download original + heatmap",
+                data=f,
+                file_name=f"{selected_body}_{selected_download_date}_original_relative_severity.png",
+                mime="image/png"
+            )
+    else:
+        st.info("No matching original and severity images found for download.")
