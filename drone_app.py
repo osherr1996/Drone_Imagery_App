@@ -271,26 +271,25 @@ def make_severity_png(
     # --------------------------------------------------------
     # BLEND
     # --------------------------------------------------------
-    # keep original imagery fully visible
-    # only add color tint to bloom regions
-    
+    overlay_strength = 0.9
+
     blended = original_rgb.copy()
-    
-    # stronger overlay for visible bloom
-    overlay_strength = 0.75
-    
-    # only colorize strong severity pixels
-    severity_mask = severity > 0.15
-    
-    blended[severity_mask] = (
-        (1 - overlay_strength) * original_rgb[severity_mask] +
-        overlay_strength * heat_rgb[severity_mask]
+
+    blended[valid] = (
+        (1 - overlay_strength) * original_rgb[valid] +
+        overlay_strength * heat_rgb[valid]
     )
-    
+
     blended = np.clip(
         blended,
         0,
         255
+    ).astype(np.uint8)
+
+    alpha = np.where(
+        valid,
+        255,
+        0
     ).astype(np.uint8)
 
     rgba = np.dstack([blended, alpha])
