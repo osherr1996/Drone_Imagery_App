@@ -57,15 +57,16 @@ SEVERITY_PALETTE = np.array([
     [120,   0,   0],
 ], dtype=np.float32)
 
-# Pseudo-BI: deep blue → cyan → lime → orange → red  (absolute, 0.6–5.0)
+# Pseudo-BI: dark teal → teal-green → lime → yellow → orange → red → dark red
+# Matches the reference image: Clean(dark teal) → Low → Medium → High → Very High → Extreme
 PSEUDO_BI_PALETTE = np.array([
-    [68,   1, 84],    # viridis dark purple  (low BI)
-    [59,  82, 139],   # blue
-    [33, 145, 140],   # teal
-    [94, 201, 98],    # green
-    [253, 231,  37],  # yellow
-    [255, 140,   0],  # orange
-    [200,   0,   0],  # red                  (high BI)
+    [0,   80,  60],    # dark teal   (Clean)
+    [0,  130,  80],    # teal-green
+    [80, 185,  50],    # lime green  (Low)
+    [220, 220,  0],    # yellow      (Medium)
+    [255, 140,  0],    # orange      (High)
+    [200,  30,  0],    # red         (Very High)
+    [100,   0,  0],    # dark red    (Extreme)
 ], dtype=np.float32)
 
 BI_MIN = 0.6
@@ -282,30 +283,42 @@ def create_side_by_side_download(original_path, severity_path,
 
 
 def make_legend_html():
+    # Severity: blue → yellow → red (no numbers, just Low/Medium/High)
     sev_grad = ("linear-gradient(to top,"
-                "rgb(0,80,220),rgb(255,235,0),rgb(220,0,0),rgb(120,0,0))")
+                "rgb(0,80,220),rgb(255,235,0),rgb(220,0,0))")
+    # Pseudo-BI: dark teal → lime → yellow → orange → red → dark red
     bi_grad  = ("linear-gradient(to top,"
-                "rgb(68,1,84),rgb(33,145,140),rgb(253,231,37),rgb(200,0,0))")
+                "rgb(0,80,60),rgb(0,130,80),rgb(80,185,50),"
+                "rgb(220,220,0),rgb(255,140,0),rgb(200,30,0),rgb(100,0,0))")
     return f"""
     <div style="position:fixed;bottom:30px;right:30px;z-index:9999;
     background:white;padding:12px;border:2px solid #444;border-radius:8px;
-    font-size:13px;width:260px;box-shadow:0 2px 8px rgba(0,0,0,0.25);">
+    font-size:13px;width:200px;box-shadow:0 2px 8px rgba(0,0,0,0.25);">
 
-    <b>Relative Severity</b> &nbsp;<span style="font-size:11px;color:#555;">(0–3)</span>
-    <div style="display:flex;gap:10px;margin:6px 0 10px 0;">
-        <div style="width:16px;height:120px;background:{sev_grad};
-        border:1px solid #333;border-radius:2px;"></div>
-        <div style="font-size:11px;line-height:40px;">
-            <div><b>High</b></div><div><b>Med</b></div><div><b>Low</b></div>
+    <b>Relative Severity</b>
+    <div style="display:flex;gap:10px;margin:6px 0 12px 0;">
+        <div style="width:16px;height:90px;background:{sev_grad};
+        border:1px solid #333;border-radius:2px;flex-shrink:0;"></div>
+        <div style="font-size:11px;display:flex;flex-direction:column;
+        justify-content:space-between;height:90px;">
+            <div><b>High</b></div>
+            <div><b>Medium</b></div>
+            <div><b>Low</b></div>
         </div>
     </div>
 
     <b>Pseudo Bloom Index</b> &nbsp;<span style="font-size:11px;color:#555;">({BI_MIN}–{BI_MAX})</span>
     <div style="display:flex;gap:10px;margin:6px 0 6px 0;">
-        <div style="width:16px;height:120px;background:{bi_grad};
-        border:1px solid #333;border-radius:2px;"></div>
-        <div style="font-size:11px;line-height:40px;">
-            <div><b>High</b></div><div><b>Med</b></div><div><b>Low</b></div>
+        <div style="width:16px;height:140px;background:{bi_grad};
+        border:1px solid #333;border-radius:2px;flex-shrink:0;"></div>
+        <div style="font-size:11px;display:flex;flex-direction:column;
+        justify-content:space-between;height:140px;">
+            <div><b>Extreme</b></div>
+            <div><b>Very High</b></div>
+            <div><b>High</b></div>
+            <div><b>Medium</b></div>
+            <div><b>Low</b></div>
+            <div><b>Clean</b></div>
         </div>
     </div>
 
@@ -332,46 +345,49 @@ def add_layer_control_scroll(m, max_height="450px"):
 
 
 def make_timeline_chart(summary_df):
+    """Trendline showing Pseudo Bloom Index only."""
     chart_df = summary_df.copy()
     chart_df["date_sort"] = chart_df["date_dt"].dt.strftime("%Y-%m-%d")
 
-    # melt severity + pseudo_bi into long form for dual lines
     rows = []
     for _, r in chart_df.iterrows():
-        rows.append({"date_label": r["date"], "date_sort": r["date_sort"],
-                     "value": r["mean_severity"],   "metric": "Severity (0–3)"})
         if not np.isnan(r.get("mean_pseudo_bi", float("nan"))):
-            rows.append({"date_label": r["date"], "date_sort": r["date_sort"],
-                         "value": r["mean_pseudo_bi"], "metric": f"Pseudo-BI ({BI_MIN}–{BI_MAX})"})
+            rows.append({
+                "date_label": r["date"],
+                "date_sort":  r["date_sort"],
+                "value":      r["mean_pseudo_bi"],
+                "metric":     f"Pseudo-BI ({BI_MIN}–{BI_MAX})",
+            })
+
+    if not rows:
+        st.info("No Pseudo-BI data available for the timeline.")
+        return
 
     spec = {
         "data": {"values": rows},
         "width": 360, "height": 220,
         "layer": [
             {
-                "mark": {"type": "line", "opacity": 0.5},
+                "mark": {"type": "line", "opacity": 0.7, "color": "#00a86b"},
                 "encoding": {
                     "x": {"field": "date_label", "type": "ordinal",
                           "sort": {"field": "date_sort", "order": "ascending"},
                           "axis": {"title": "Date"}},
                     "y": {"field": "value", "type": "quantitative",
-                          "axis": {"title": "Value"}},
-                    "color": {"field": "metric", "type": "nominal"}
+                          "axis": {"title": f"Pseudo-BI ({BI_MIN}–{BI_MAX})"},
+                          "scale": {"domain": [BI_MIN, BI_MAX]}},
                 }
             },
             {
-                "mark": {"type": "circle", "size": 150},
+                "mark": {"type": "circle", "size": 150, "color": "#00a86b"},
                 "encoding": {
                     "x": {"field": "date_label", "type": "ordinal",
                           "sort": {"field": "date_sort", "order": "ascending"}},
                     "y": {"field": "value", "type": "quantitative"},
-                    "color": {"field": "metric", "type": "nominal",
-                              "legend": {"title": "Metric"}},
                     "tooltip": [
-                        {"field": "date_label", "type": "ordinal",  "title": "Date"},
-                        {"field": "metric",     "type": "nominal",  "title": "Metric"},
-                        {"field": "value",      "type": "quantitative",
-                         "title": "Value", "format": ".3f"},
+                        {"field": "date_label", "type": "ordinal",       "title": "Date"},
+                        {"field": "value",      "type": "quantitative",  "title": "Pseudo-BI",
+                         "format": ".3f"},
                     ]
                 }
             }
@@ -402,9 +418,9 @@ def get_jpgs(prefix):
     ])
 
 
-original_files  = get_jpgs("original")
-severity_files  = get_jpgs("severity")
-pseudo_bi_files = get_jpgs("pseudo_bi")
+original_files   = get_jpgs("original")
+severity_files   = get_jpgs("severity")
+pseudo_bi_files  = get_jpgs("pseudo_bi")
 
 if not severity_files:
     st.warning("No severity heatmaps found for this water body.")
@@ -428,8 +444,8 @@ def download_with_sidecars(hf_paths):
 
 
 with st.spinner("Downloading data..."):
-    orig_by_date     = download_with_sidecars(original_files)
-    sev_by_date      = download_with_sidecars(severity_files)
+    orig_by_date      = download_with_sidecars(original_files)
+    sev_by_date       = download_with_sidecars(severity_files)
     pseudo_bi_by_date = download_with_sidecars(pseudo_bi_files)
 
 all_dates = sorted(
@@ -494,12 +510,12 @@ for i, date in enumerate(all_dates):
         ).add_to(m)
 
     summary_rows.append({
-        "date":          date,
-        "date_dt":       parse_date(date),
-        "mean_severity": mean_sev,
+        "date":           date,
+        "date_dt":        parse_date(date),
+        "mean_severity":  mean_sev,
         "severity_level": severity_category(mean_sev),
         "mean_pseudo_bi": mean_bi,
-        "bi_level":      bi_category(mean_bi) if not np.isnan(mean_bi) else "—",
+        "bi_level":       bi_category(mean_bi) if not np.isnan(mean_bi) else "—",
     })
 
 m.get_root().html.add_child(folium.Element(make_legend_html()))
@@ -528,11 +544,11 @@ with col2:
     display_cols = ["date", "mean_severity", "severity_level",
                     "mean_pseudo_bi", "bi_level"]
     rename_map   = {
-        "date":          "Date",
-        "mean_severity": "Severity",
+        "date":           "Date",
+        "mean_severity":  "Severity",
         "severity_level": "Sev. Level",
         "mean_pseudo_bi": "Pseudo-BI",
-        "bi_level":      "BI Level",
+        "bi_level":       "BI Level",
     }
 
     st.dataframe(
@@ -548,8 +564,8 @@ with col2:
     st.metric("Latest Mean Severity",  f"{latest['mean_severity']:.2f}")
 
     if not np.isnan(latest["mean_pseudo_bi"]):
-        st.metric("Latest BI Level",   latest["bi_level"])
-        st.metric("Latest Pseudo-BI",  f"{latest['mean_pseudo_bi']:.2f}")
+        st.metric("Latest BI Level",  latest["bi_level"])
+        st.metric("Latest Pseudo-BI", f"{latest['mean_pseudo_bi']:.2f}")
 
     st.divider()
     st.subheader("Download Image")
