@@ -510,33 +510,98 @@ if not severity_files:
     st.stop()
 
 
+
 # ============================================================
 # DOWNLOAD FILES
 # ============================================================
+def make_item_key(hf_path):
+    """Unique key so multiple images from the same date are not overwritten."""
+    date = extract_date_label(hf_path)
+    stem = os.path.splitext(os.path.basename(hf_path))[0]
+    return f"{date}__{stem}", date, stem
+
+
 def download_with_sidecars(hf_paths):
-    local = {}
+    """
+    Returns:
+      items_by_key: dict[key] -> metadata dict
+      items_by_date: dict[date] -> list of metadata dicts
+
+    Important: we do NOT use date alone as the key, because two images
+    can have the same date and would overwrite each other.
+    """
+    items_by_key = {}
+    items_by_date = {}
+
     for hf_path in hf_paths:
-        date = extract_date_label(hf_path)
+        key, date, stem = make_item_key(hf_path)
+
         local_jpg = download_file(HF_REPO_ID, hf_path, HF_REPO_TYPE, HF_TOKEN)
+
         for ext in [".jgw", ".prj"]:
             sidecar = os.path.splitext(hf_path)[0] + ext
             if sidecar in all_files:
                 download_file(HF_REPO_ID, sidecar, HF_REPO_TYPE, HF_TOKEN)
-        local[date] = local_jpg
-    return local
+
+        item = {
+            "key": key,
+            "date": date,
+            "name": stem,
+            "path": local_jpg,
+            "hf_path": hf_path,
+        }
+
+        items_by_key[key] = item
+        items_by_date.setdefault(date, []).append(item)
+
+    return items_by_key, items_by_date
+
+
+def find_matching_item(reference_item, items_by_key, items_by_date):
+    """
+    Match original/severity/pseudo-BI for the same acquisition.
+    Priority:
+      1. exact unique key match
+      2. same date with only one candidate
+      3. same date and similar filename/stem
+      4. no match
+    """
+    key = reference_item["key"]
+    date = reference_item["date"]
+    name = reference_item["name"]
+
+    if key in items_by_key:
+        return items_by_key[key]
+
+    candidates = items_by_date.get(date, [])
+    if len(candidates) == 1:
+        return candidates[0]
+
+    # Loose filename matching for cases where folder prefixes differ
+    for cand in candidates:
+        cand_name = cand["name"]
+        if cand_name == name or cand_name in name or name in cand_name:
+            return cand
+
+    return None
 
 
 with st.spinner("Downloading data..."):
-    orig_by_date = download_with_sidecars(original_files)
-    sev_by_date = download_with_sidecars(severity_files)
-    pseudo_bi_by_date = download_with_sidecars(pseudo_bi_files)
+    orig_by_key, orig_by_date = download_with_sidecars(original_files)
+    sev_by_key, sev_by_date = download_with_sidecars(severity_files)
+    pseudo_bi_by_key, pseudo_bi_by_date = download_with_sidecars(pseudo_bi_files)
 
-all_dates = sorted(
-    sev_by_date.keys(),
-    key=lambda d: parse_date(d) if pd.notna(parse_date(d)) else pd.Timestamp.max,
+all_keys = sorted(
+    sev_by_key.keys(),
+    key=lambda k: (
+        parse_date(sev_by_key[k]["date"])
+        if pd.notna(parse_date(sev_by_key[k]["date"]))
+        else pd.Timestamp.max,
+        sev_by_key[k]["name"],
+    ),
 )
 
-if not all_dates:
+if not all_keys:
     st.error("No dated files found.")
     st.stop()
 
@@ -544,7 +609,7 @@ if not all_dates:
 # ============================================================
 # BUILD MAP
 # ============================================================
-first_bounds = read_jgw_bounds(sev_by_date[all_dates[0]])
+first_bounds = read_jgw_bounds(sev_by_key[all_keys[0]]["path"])
 center_lat = (first_bounds[0][0] + first_bounds[1][0]) / 2
 center_lon = (first_bounds[0][1] + first_bounds[1][1]) / 2
 
@@ -559,15 +624,29 @@ folium.TileLayer(
 ).add_to(m)
 
 summary_rows = []
+matched_items_for_download = []
 
-for i, date in enumerate(all_dates):
+for i, key in enumerate(all_keys):
     show_first = (i == 0)
-    bounds = read_jgw_bounds(sev_by_date[date])
-    orig_path = orig_by_date.get(date)
 
+    sev_item = sev_by_key[key]
+    date = sev_item["date"]
+    name = sev_item["name"]
+    display_name = f"{date} | {name}"
+
+    bounds = read_jgw_bounds(sev_item["path"])
+
+    orig_item = find_matching_item(sev_item, orig_by_key, orig_by_date)
+    bi_item = find_matching_item(sev_item, pseudo_bi_by_key, pseudo_bi_by_date)
+
+    orig_path = orig_item["path"] if orig_item else None
+    sev_path = sev_item["path"]
+    bi_path = bi_item["path"] if bi_item else None
+
+    # Original layer
     if orig_path:
         ImageOverlay(
-            name=f"{date} | Original",
+            name=f"{display_name} | Original",
             image=make_original_png(orig_path),
             bounds=bounds,
             opacity=1.0,
@@ -575,9 +654,10 @@ for i, date in enumerate(all_dates):
             show=show_first,
         ).add_to(m)
 
-    sev_png, mean_sev = make_severity_png(sev_by_date[date], orig_path)
+    # Severity layer
+    sev_png, mean_sev = make_severity_png(sev_path, orig_path)
     ImageOverlay(
-        name=f"{date} | Severity",
+        name=f"{display_name} | Severity",
         image=sev_png,
         bounds=bounds,
         opacity=1.0,
@@ -585,11 +665,12 @@ for i, date in enumerate(all_dates):
         show=False,
     ).add_to(m)
 
+    # Pseudo-BI layer
     mean_bi = float("nan")
-    if date in pseudo_bi_by_date:
-        bi_png, mean_bi = make_pseudo_bi_png(pseudo_bi_by_date[date], orig_path)
+    if bi_path:
+        bi_png, mean_bi = make_pseudo_bi_png(bi_path, orig_path)
         ImageOverlay(
-            name=f"{date} | Pseudo-BI",
+            name=f"{display_name} | Pseudo-BI",
             image=bi_png,
             bounds=bounds,
             opacity=1.0,
@@ -598,12 +679,25 @@ for i, date in enumerate(all_dates):
         ).add_to(m)
 
     summary_rows.append({
+        "key": key,
         "date": date,
+        "name": name,
+        "display_name": display_name,
         "date_dt": parse_date(date),
         "mean_severity": mean_sev,
         "severity_level": severity_category(mean_sev),
         "mean_pseudo_bi": mean_bi,
         "bi_level": bi_category(mean_bi) if not np.isnan(mean_bi) else "—",
+    })
+
+    matched_items_for_download.append({
+        "key": key,
+        "date": date,
+        "name": name,
+        "display_name": display_name,
+        "original_path": orig_path,
+        "severity_path": sev_path,
+        "pseudo_bi_path": bi_path,
     })
 
 m.get_root().html.add_child(folium.Element(make_legend_html()))
@@ -617,7 +711,7 @@ folium.LayerControl(collapsed=False).add_to(m)
 col1, col2 = st.columns([3, 1])
 
 with col1:
-    st.caption("Use the layer control at the top-right of the map to toggle dates and layers.")
+    st.caption("Use the layer control at the top-right of the map to toggle dates, images, and layers.")
     st_folium(m, width=1000, height=700)
 
 with col2:
@@ -625,13 +719,14 @@ with col2:
 
     summary_df = (
         pd.DataFrame(summary_rows)
-        .sort_values("date_dt")
+        .sort_values(["date_dt", "name"])
         .reset_index(drop=True)
     )
 
-    display_cols = ["date", "mean_severity", "severity_level", "mean_pseudo_bi", "bi_level"]
+    display_cols = ["date", "name", "mean_severity", "severity_level", "mean_pseudo_bi", "bi_level"]
     rename_map = {
         "date": "Date",
+        "name": "Image",
         "mean_severity": "Severity",
         "severity_level": "Sev. Level",
         "mean_pseudo_bi": "Pseudo-BI",
@@ -644,7 +739,10 @@ with col2:
         use_container_width=True,
     )
 
-    make_timeline_chart(summary_df)
+    # Use unique display labels in the timeline, so duplicate dates appear separately
+    timeline_df = summary_df.copy()
+    timeline_df["date"] = timeline_df["display_name"]
+    make_timeline_chart(timeline_df)
 
     latest = summary_df.iloc[-1]
     st.metric("Latest Severity Level", latest["severity_level"])
@@ -657,35 +755,41 @@ with col2:
     st.divider()
     st.subheader("Download PNG")
 
-    downloadable_dates = [d for d in all_dates if d in orig_by_date and d in sev_by_date]
+    downloadable_items = [
+        item for item in matched_items_for_download
+        if item["original_path"] and item["severity_path"]
+    ]
 
-    if downloadable_dates:
-        selected_dl = st.selectbox(
-            "Choose date to download",
-            downloadable_dates,
-            index=len(downloadable_dates) - 1,
+    if downloadable_items:
+        labels = [item["display_name"] for item in downloadable_items]
+        selected_label = st.selectbox(
+            "Choose image to download",
+            labels,
+            index=len(labels) - 1,
         )
+        selected_item = downloadable_items[labels.index(selected_label)]
 
         preview_path = create_side_by_side_download(
-            orig_by_date.get(selected_dl),
-            sev_by_date.get(selected_dl),
-            pseudo_bi_by_date.get(selected_dl),
-            selected_dl,
-            location_label,
+            selected_item["original_path"],
+            selected_item["severity_path"],
+            selected_item["pseudo_bi_path"],
+            selected_item["date"],
+            f"{location_label} | {selected_item['name']}",
         )
 
         if preview_path:
             st.image(
                 preview_path,
-                caption=f"{location_label} | {selected_dl}",
+                caption=f"{location_label} | {selected_item['display_name']}",
                 use_container_width=True,
             )
 
+            safe_name = re.sub(r"[^A-Za-z0-9_\-]+", "_", selected_item["display_name"])
             with open(preview_path, "rb") as f:
                 st.download_button(
                     label="Download titled PNG",
                     data=f,
-                    file_name=f"{selected_body}_{selected_dl}_analysis.png",
+                    file_name=f"{selected_body}_{safe_name}_analysis.png",
                     mime="image/png",
                 )
     else:
@@ -696,16 +800,16 @@ with col2:
 
     fps = st.slider("Frames per second", min_value=1, max_value=10, value=1)
 
-    if st.button("Create MP4 from all dates"):
+    if st.button("Create MP4 from all images"):
         png_paths = []
         with st.spinner("Creating titled PNG frames and MP4..."):
-            for d in downloadable_dates:
+            for item in downloadable_items:
                 frame_path = create_side_by_side_download(
-                    orig_by_date.get(d),
-                    sev_by_date.get(d),
-                    pseudo_bi_by_date.get(d),
-                    d,
-                    location_label,
+                    item["original_path"],
+                    item["severity_path"],
+                    item["pseudo_bi_path"],
+                    item["date"],
+                    f"{location_label} | {item['name']}",
                 )
                 if frame_path:
                     png_paths.append(frame_path)
@@ -718,7 +822,7 @@ with col2:
                 st.download_button(
                     label="Download MP4 video",
                     data=f,
-                    file_name=f"{selected_body}_all_dates_analysis.mp4",
+                    file_name=f"{selected_body}_all_images_analysis.mp4",
                     mime="video/mp4",
                 )
         else:
