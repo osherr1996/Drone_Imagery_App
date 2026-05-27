@@ -626,25 +626,68 @@ folium.TileLayer(
 summary_rows = []
 matched_items_for_download = []
 
+# ============================================================
+# DISPLAY NAME COUNTER
+# ============================================================
+
+date_counter = {}
+
 for i, key in enumerate(all_keys):
+
     show_first = (i == 0)
 
     sev_item = sev_by_key[key]
+
     date = sev_item["date"]
     name = sev_item["name"]
-    display_name = f"{date} | {name}"
+
+    # ========================================================
+    # SIMPLE DISPLAY NAME
+    # SAME DATE -> A / B / C ...
+    # ========================================================
+
+    if date not in date_counter:
+        date_counter[date] = 0
+
+    idx = date_counter[date]
+    date_counter[date] += 1
+
+    suffix = chr(ord("A") + idx)
+
+    display_name = f"{date} | {suffix}"
 
     bounds = read_jgw_bounds(sev_item["path"])
 
-    orig_item = find_matching_item(sev_item, orig_by_key, orig_by_date)
-    bi_item = find_matching_item(sev_item, pseudo_bi_by_key, pseudo_bi_by_date)
+    orig_item = find_matching_item(
+        sev_item,
+        orig_by_key,
+        orig_by_date
+    )
 
-    orig_path = orig_item["path"] if orig_item else None
+    bi_item = find_matching_item(
+        sev_item,
+        pseudo_bi_by_key,
+        pseudo_bi_by_date
+    )
+
+    orig_path = (
+        orig_item["path"]
+        if orig_item else None
+    )
+
     sev_path = sev_item["path"]
-    bi_path = bi_item["path"] if bi_item else None
 
-    # Original layer
+    bi_path = (
+        bi_item["path"]
+        if bi_item else None
+    )
+
+    # ========================================================
+    # ORIGINAL LAYER
+    # ========================================================
+
     if orig_path:
+
         ImageOverlay(
             name=f"{display_name} | Original",
             image=make_original_png(orig_path),
@@ -654,8 +697,15 @@ for i, key in enumerate(all_keys):
             show=show_first,
         ).add_to(m)
 
-    # Severity layer
-    sev_png, mean_sev = make_severity_png(sev_path, orig_path)
+    # ========================================================
+    # SEVERITY LAYER
+    # ========================================================
+
+    sev_png, mean_sev = make_severity_png(
+        sev_path,
+        orig_path
+    )
+
     ImageOverlay(
         name=f"{display_name} | Severity",
         image=sev_png,
@@ -665,10 +715,19 @@ for i, key in enumerate(all_keys):
         show=False,
     ).add_to(m)
 
-    # Pseudo-BI layer
+    # ========================================================
+    # PSEUDO BI LAYER
+    # ========================================================
+
     mean_bi = float("nan")
+
     if bi_path:
-        bi_png, mean_bi = make_pseudo_bi_png(bi_path, orig_path)
+
+        bi_png, mean_bi = make_pseudo_bi_png(
+            bi_path,
+            orig_path
+        )
+
         ImageOverlay(
             name=f"{display_name} | Pseudo-BI",
             image=bi_png,
@@ -677,6 +736,10 @@ for i, key in enumerate(all_keys):
             interactive=True,
             show=False,
         ).add_to(m)
+
+    # ========================================================
+    # SUMMARY TABLE
+    # ========================================================
 
     summary_rows.append({
         "key": key,
@@ -687,8 +750,16 @@ for i, key in enumerate(all_keys):
         "mean_severity": mean_sev,
         "severity_level": severity_category(mean_sev),
         "mean_pseudo_bi": mean_bi,
-        "bi_level": bi_category(mean_bi) if not np.isnan(mean_bi) else "—",
+        "bi_level": (
+            bi_category(mean_bi)
+            if not np.isnan(mean_bi)
+            else "—"
+        ),
     })
+
+    # ========================================================
+    # DOWNLOAD ITEMS
+    # ========================================================
 
     matched_items_for_download.append({
         "key": key,
@@ -700,9 +771,18 @@ for i, key in enumerate(all_keys):
         "pseudo_bi_path": bi_path,
     })
 
-m.get_root().html.add_child(folium.Element(make_legend_html()))
-add_layer_control_scroll(m, max_height="450px")
-folium.LayerControl(collapsed=False).add_to(m)
+m.get_root().html.add_child(
+    folium.Element(make_legend_html())
+)
+
+add_layer_control_scroll(
+    m,
+    max_height="450px"
+)
+
+folium.LayerControl(
+    collapsed=False
+).add_to(m)
 
 
 # ============================================================
