@@ -299,8 +299,8 @@ def create_side_by_side_download(
 
     margin = 22
     gap = 18
-    title_h = 82
-    label_h = 28
+    title_h = 135
+    label_h = 42
 
     out_w = sum(p.width for p in panels) + gap * (len(panels) - 1) + margin * 2
     out_h = target_h + title_h + label_h + margin * 2
@@ -308,16 +308,16 @@ def create_side_by_side_download(
     canvas = Image.new("RGB", (out_w, out_h), "white")
     draw = ImageDraw.Draw(canvas)
 
-    font_title = safe_font(26)
-    font_sub = safe_font(19)
-    font_label = safe_font(20)
+    font_title = safe_font(46)
+    font_sub = safe_font(30)
+    font_label = safe_font(32)
 
     title = f"{location} | {date}"
     if display_name and display_name != date:
         title += f" | {display_name}"
 
-    add_title_to_canvas(draw, title, margin, 12, font_title)
-    add_title_to_canvas(draw, "Original + HAB product", margin, 45, font_sub, fill=(70, 70, 70))
+    add_title_to_canvas(draw, title, margin, 18, font_title)
+    add_title_to_canvas(draw, "Original + HAB product", margin, 76, font_sub, fill=(70, 70, 70))
 
     x = margin
     y_label = margin + title_h
