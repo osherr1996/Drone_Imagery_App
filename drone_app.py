@@ -172,28 +172,39 @@ def bi_category(mean_bi):
 
 
 def safe_font(size=80, bold=False):
-
     candidates = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
-        if bold else
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"
-        if bold else
-        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
-
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
         "arialbd.ttf" if bold else "arial.ttf",
         "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
     ]
 
-    for font_path in candidates:
+    for fp in candidates:
         try:
-            return ImageFont.truetype(font_path, size)
+            return ImageFont.truetype(fp, size)
         except Exception:
             pass
 
     return ImageFont.load_default()
 
+
+def fit_font(draw, text, max_width, start_size=260, min_size=40, bold=True):
+    size = start_size
+    while size >= min_size:
+        font = safe_font(size, bold=bold)
+        bbox = draw.textbbox((0, 0), text, font=font)
+        w = bbox[2] - bbox[0]
+        if w <= max_width:
+            return font
+        size -= 10
+    return safe_font(min_size, bold=bold)
+
+
+def center_text(draw, text, y, canvas_w, font, fill="black"):
+    bbox = draw.textbbox((0, 0), text, font=font)
+    w = bbox[2] - bbox[0]
+    x = (canvas_w - w) // 2
+    draw.text((x, y), text, fill=fill, font=font)
 
 
 # ============================================================
@@ -285,7 +296,6 @@ def create_side_by_side_download(
     display_name="",
     mode="both",
 ):
-
     panels = []
     labels = []
 
@@ -294,175 +304,66 @@ def create_side_by_side_download(
         labels.append("Original")
 
     if mode in ["relative", "both"] and severity_path and os.path.exists(severity_path):
-
-        sev_png, _ = make_severity_png(
-            severity_path,
-            original_path
-        )
-
-        panels.append(
-            Image.open(sev_png).convert("RGB")
-        )
-
+        sev_png, _ = make_severity_png(severity_path, original_path)
+        panels.append(Image.open(sev_png).convert("RGB"))
         labels.append("Relative Severity")
 
     if mode in ["pseudo", "both"] and pseudo_bi_path and os.path.exists(pseudo_bi_path):
-
-        bi_png, _ = make_pseudo_bi_png(
-            pseudo_bi_path,
-            original_path
-        )
-
-        panels.append(
-            Image.open(bi_png).convert("RGB")
-        )
-
+        bi_png, _ = make_pseudo_bi_png(pseudo_bi_path, original_path)
+        panels.append(Image.open(bi_png).convert("RGB"))
         labels.append("Pseudo-BI")
 
     if not panels:
         return None
 
-    target_h = min(
-        min(p.height for p in panels),
-        950
-    )
+    target_h = min(min(p.height for p in panels), 950)
 
     def resize_keep_ratio(img, h):
-
         scale = h / img.height
+        return img.resize((int(img.width * scale), h), Image.LANCZOS)
 
-        return img.resize(
-            (
-                int(img.width * scale),
-                h
-            ),
-            Image.LANCZOS
-        )
+    panels = [resize_keep_ratio(p, target_h) for p in panels]
 
-    panels = [
-        resize_keep_ratio(p, target_h)
-        for p in panels
-    ]
+    margin = 45
+    gap = 45
+    title_h = 260
+    label_h = 95
 
-    margin = 50
-    gap = 40
+    out_w = sum(p.width for p in panels) + gap * (len(panels) - 1) + margin * 2
+    out_h = target_h + title_h + label_h + margin * 2
 
-    # HUGE TITLE SPACE
-    title_h = 360
-    label_h = 90
-
-    out_w = (
-        sum(p.width for p in panels)
-        + gap * (len(panels) - 1)
-        + margin * 2
-    )
-
-    out_h = (
-        target_h
-        + title_h
-        + label_h
-        + margin * 2
-    )
-
-    canvas = Image.new(
-        "RGB",
-        (out_w, out_h),
-        "white"
-    )
-
+    canvas = Image.new("RGB", (out_w, out_h), "white")
     draw = ImageDraw.Draw(canvas)
-
-    # HUGE FONTS
-    font_title = safe_font(150, bold=True)
-    font_sub = safe_font(80, bold=True)
-    font_label = safe_font(58, bold=True)
 
     title = f"{location} | {date}"
 
-    if display_name and display_name != date:
+    if display_name and display_name != date and "|" in display_name:
+        suffix = display_name.split("|")[-1].strip()
+        title += f" | {suffix}"
 
-        if "|" in display_name:
-            suffix = display_name.split("|")[-1].strip()
-            title += f" | {suffix}"
+    font_title = fit_font(draw, title, max_width=out_w - 80, start_size=260, bold=True)
+    font_sub = fit_font(draw, "HAB Bloom Analysis", max_width=out_w - 80, start_size=120, bold=True)
+    font_label = safe_font(72, bold=True)
 
-    # CENTER TITLE
-    bbox = draw.textbbox(
-        (0, 0),
-        title,
-        font=font_title
-    )
-
-    title_w = bbox[2] - bbox[0]
-
-    title_x = (out_w - title_w) // 2
-
-    draw.text(
-        (title_x, 35),
-        title,
-        fill="black",
-        font=font_title
-    )
-
-    subtitle = "HAB Bloom Analysis"
-
-    bbox2 = draw.textbbox(
-        (0, 0),
-        subtitle,
-        font=font_sub
-    )
-
-    sub_w = bbox2[2] - bbox2[0]
-
-    sub_x = (out_w - sub_w) // 2
-
-    draw.text(
-        (sub_x, 190),
-        subtitle,
-        fill=(70, 70, 70),
-        font=font_sub
-    )
+    center_text(draw, title, 30, out_w, font_title, fill="black")
+    center_text(draw, "HAB Bloom Analysis", 165, out_w, font_sub, fill=(60, 60, 60))
 
     x = margin
-
     y_label = margin + title_h
-
     y_img = y_label + label_h
 
     for panel, label in zip(panels, labels):
+        bbox = draw.textbbox((0, 0), label, font=font_label)
+        label_w = bbox[2] - bbox[0]
+        label_x = x + (panel.width - label_w) // 2
 
-        bbox3 = draw.textbbox(
-            (0, 0),
-            label,
-            font=font_label
-        )
-
-        label_w = bbox3[2] - bbox3[0]
-
-        label_x = x + (
-            panel.width - label_w
-        ) // 2
-
-        draw.text(
-            (label_x, y_label),
-            label,
-            fill="black",
-            font=font_label
-        )
-
-        canvas.paste(
-            panel,
-            (x, y_img)
-        )
+        draw.text((label_x, y_label), label, fill="black", font=font_label)
+        canvas.paste(panel, (x, y_img))
 
         x += panel.width + gap
 
-    tmp = tempfile.NamedTemporaryFile(
-        delete=False,
-        suffix=".png"
-    )
-
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     canvas.save(tmp.name)
-
     return tmp.name
 
 
