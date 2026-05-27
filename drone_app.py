@@ -566,9 +566,32 @@ if not severity_files:
     st.stop()
 
 
+def product_preference_score(name):
+    """Prefer final product files over intermediate same-date/same-image variants."""
+    n = name.lower()
+    score = 0
+    if "_severity" in n:
+        score += 10
+    if "pseudo" in n or "pseudobi" in n or "pseudo_bi" in n:
+        score += 10
+    if "final" in n:
+        score += 2
+    return score
+
+
 def download_with_sidecars(hf_paths):
+    """
+    Download files and de-duplicate technical duplicates.
+
+    Important:
+    Some folders contain two files for the same image/date, for example:
+    ...FINAL_severity_index_georef.jpg
+    ...FINAL_severity_index_georef_severity.jpg
+
+    They should NOT become A/B duplicates. A/B is used only when there are
+    two genuinely different images on the same date, for example DJI_0787 and DJI_0849.
+    """
     local_by_key = {}
-    local_by_date = {}
 
     for hf_path in hf_paths:
         date = extract_date_label(hf_path)
@@ -592,8 +615,23 @@ def download_with_sidecars(hf_paths):
             "hf_path": hf_path,
         }
 
-        local_by_key[key] = item
-        local_by_date.setdefault(date, []).append(item)
+        # Keep only one file per normalized product key.
+        # If duplicate technical variants exist, keep the more final/product-like one.
+        if key not in local_by_key:
+            local_by_key[key] = item
+        else:
+            old_score = product_preference_score(local_by_key[key]["name"])
+            new_score = product_preference_score(name)
+            if new_score >= old_score:
+                local_by_key[key] = item
+
+    # Build date index AFTER de-duplication.
+    local_by_date = {}
+    for item in local_by_key.values():
+        local_by_date.setdefault(item["date"], []).append(item)
+
+    for date in local_by_date:
+        local_by_date[date] = sorted(local_by_date[date], key=lambda x: x["name"])
 
     return local_by_key, local_by_date
 
