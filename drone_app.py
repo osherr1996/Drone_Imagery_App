@@ -171,13 +171,29 @@ def bi_category(mean_bi):
     return "High bloom"
 
 
-def safe_font(size=24):
-    for font_name in ["arial.ttf", "DejaVuSans.ttf"]:
+def safe_font(size=80, bold=False):
+
+    candidates = [
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+        if bold else
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Bold.ttf"
+        if bold else
+        "/usr/share/fonts/truetype/liberation2/LiberationSans-Regular.ttf",
+
+        "arialbd.ttf" if bold else "arial.ttf",
+        "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
+    ]
+
+    for font_path in candidates:
         try:
-            return ImageFont.truetype(font_name, size)
+            return ImageFont.truetype(font_path, size)
         except Exception:
             pass
+
     return ImageFont.load_default()
+
 
 
 # ============================================================
@@ -269,6 +285,7 @@ def create_side_by_side_download(
     display_name="",
     mode="both",
 ):
+
     panels = []
     labels = []
 
@@ -277,32 +294,62 @@ def create_side_by_side_download(
         labels.append("Original")
 
     if mode in ["relative", "both"] and severity_path and os.path.exists(severity_path):
-        sev_png, _ = make_severity_png(severity_path, original_path)
-        panels.append(Image.open(sev_png).convert("RGB"))
+
+        sev_png, _ = make_severity_png(
+            severity_path,
+            original_path
+        )
+
+        panels.append(
+            Image.open(sev_png).convert("RGB")
+        )
+
         labels.append("Relative Severity")
 
     if mode in ["pseudo", "both"] and pseudo_bi_path and os.path.exists(pseudo_bi_path):
-        bi_png, _ = make_pseudo_bi_png(pseudo_bi_path, original_path)
-        panels.append(Image.open(bi_png).convert("RGB"))
+
+        bi_png, _ = make_pseudo_bi_png(
+            pseudo_bi_path,
+            original_path
+        )
+
+        panels.append(
+            Image.open(bi_png).convert("RGB")
+        )
+
         labels.append("Pseudo-BI")
 
     if not panels:
         return None
 
-    target_h = min(min(p.height for p in panels), 950)
+    target_h = min(
+        min(p.height for p in panels),
+        950
+    )
 
     def resize_keep_ratio(img, h):
+
         scale = h / img.height
-        return img.resize((int(img.width * scale), h), Image.LANCZOS)
 
-    panels = [resize_keep_ratio(p, target_h) for p in panels]
+        return img.resize(
+            (
+                int(img.width * scale),
+                h
+            ),
+            Image.LANCZOS
+        )
 
-    margin = 40
+    panels = [
+        resize_keep_ratio(p, target_h)
+        for p in panels
+    ]
+
+    margin = 50
     gap = 40
 
-    # MUCH BIGGER TITLE AREA
-    title_h = 170
-    label_h = 55
+    # HUGE TITLE SPACE
+    title_h = 360
+    label_h = 90
 
     out_w = (
         sum(p.width for p in panels)
@@ -317,61 +364,83 @@ def create_side_by_side_download(
         + margin * 2
     )
 
-    canvas = Image.new("RGB", (out_w, out_h), "white")
+    canvas = Image.new(
+        "RGB",
+        (out_w, out_h),
+        "white"
+    )
+
     draw = ImageDraw.Draw(canvas)
 
     # HUGE FONTS
-    font_title = safe_font(62)
-    font_sub = safe_font(38)
-    font_label = safe_font(34)
+    font_title = safe_font(150, bold=True)
+    font_sub = safe_font(80, bold=True)
+    font_label = safe_font(58, bold=True)
 
-    # MAIN TITLE
     title = f"{location} | {date}"
 
     if display_name and display_name != date:
+
         if "|" in display_name:
             suffix = display_name.split("|")[-1].strip()
             title += f" | {suffix}"
 
     # CENTER TITLE
-    bbox = draw.textbbox((0, 0), title, font=font_title)
+    bbox = draw.textbbox(
+        (0, 0),
+        title,
+        font=font_title
+    )
+
     title_w = bbox[2] - bbox[0]
 
     title_x = (out_w - title_w) // 2
 
     draw.text(
-        (title_x, 22),
+        (title_x, 35),
         title,
         fill="black",
         font=font_title
     )
 
-    # SUBTITLE
     subtitle = "HAB Bloom Analysis"
 
-    bbox2 = draw.textbbox((0, 0), subtitle, font=font_sub)
+    bbox2 = draw.textbbox(
+        (0, 0),
+        subtitle,
+        font=font_sub
+    )
+
     sub_w = bbox2[2] - bbox2[0]
 
     sub_x = (out_w - sub_w) // 2
 
     draw.text(
-        (sub_x, 95),
+        (sub_x, 190),
         subtitle,
         fill=(70, 70, 70),
         font=font_sub
     )
 
-    # LABELS + IMAGES
     x = margin
+
     y_label = margin + title_h
+
     y_img = y_label + label_h
 
     for panel, label in zip(panels, labels):
 
-        bbox3 = draw.textbbox((0, 0), label, font=font_label)
+        bbox3 = draw.textbbox(
+            (0, 0),
+            label,
+            font=font_label
+        )
+
         label_w = bbox3[2] - bbox3[0]
 
-        label_x = x + (panel.width - label_w) // 2
+        label_x = x + (
+            panel.width - label_w
+        ) // 2
 
         draw.text(
             (label_x, y_label),
@@ -380,7 +449,10 @@ def create_side_by_side_download(
             font=font_label
         )
 
-        canvas.paste(panel, (x, y_img))
+        canvas.paste(
+            panel,
+            (x, y_img)
+        )
 
         x += panel.width + gap
 
