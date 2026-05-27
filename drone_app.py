@@ -289,7 +289,7 @@ def create_side_by_side_download(
     if not panels:
         return None
 
-    target_h = min(min(p.height for p in panels), 900)
+    target_h = min(min(p.height for p in panels), 950)
 
     def resize_keep_ratio(img, h):
         scale = h / img.height
@@ -297,39 +297,100 @@ def create_side_by_side_download(
 
     panels = [resize_keep_ratio(p, target_h) for p in panels]
 
-    margin = 22
-    gap = 18
-    title_h = 135
-    label_h = 42
+    margin = 40
+    gap = 40
 
-    out_w = sum(p.width for p in panels) + gap * (len(panels) - 1) + margin * 2
-    out_h = target_h + title_h + label_h + margin * 2
+    # MUCH BIGGER TITLE AREA
+    title_h = 170
+    label_h = 55
+
+    out_w = (
+        sum(p.width for p in panels)
+        + gap * (len(panels) - 1)
+        + margin * 2
+    )
+
+    out_h = (
+        target_h
+        + title_h
+        + label_h
+        + margin * 2
+    )
 
     canvas = Image.new("RGB", (out_w, out_h), "white")
     draw = ImageDraw.Draw(canvas)
 
-    font_title = safe_font(46)
-    font_sub = safe_font(30)
-    font_label = safe_font(32)
+    # HUGE FONTS
+    font_title = safe_font(62)
+    font_sub = safe_font(38)
+    font_label = safe_font(34)
 
+    # MAIN TITLE
     title = f"{location} | {date}"
+
     if display_name and display_name != date:
-        title += f" | {display_name}"
+        if "|" in display_name:
+            suffix = display_name.split("|")[-1].strip()
+            title += f" | {suffix}"
 
-    add_title_to_canvas(draw, title, margin, 18, font_title)
-    add_title_to_canvas(draw, "Original + HAB product", margin, 76, font_sub, fill=(70, 70, 70))
+    # CENTER TITLE
+    bbox = draw.textbbox((0, 0), title, font=font_title)
+    title_w = bbox[2] - bbox[0]
 
+    title_x = (out_w - title_w) // 2
+
+    draw.text(
+        (title_x, 22),
+        title,
+        fill="black",
+        font=font_title
+    )
+
+    # SUBTITLE
+    subtitle = "HAB Bloom Analysis"
+
+    bbox2 = draw.textbbox((0, 0), subtitle, font=font_sub)
+    sub_w = bbox2[2] - bbox2[0]
+
+    sub_x = (out_w - sub_w) // 2
+
+    draw.text(
+        (sub_x, 95),
+        subtitle,
+        fill=(70, 70, 70),
+        font=font_sub
+    )
+
+    # LABELS + IMAGES
     x = margin
     y_label = margin + title_h
     y_img = y_label + label_h
 
     for panel, label in zip(panels, labels):
-        draw.text((x, y_label), label, fill="black", font=font_label)
+
+        bbox3 = draw.textbbox((0, 0), label, font=font_label)
+        label_w = bbox3[2] - bbox3[0]
+
+        label_x = x + (panel.width - label_w) // 2
+
+        draw.text(
+            (label_x, y_label),
+            label,
+            fill="black",
+            font=font_label
+        )
+
         canvas.paste(panel, (x, y_img))
+
         x += panel.width + gap
 
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
+    tmp = tempfile.NamedTemporaryFile(
+        delete=False,
+        suffix=".png"
+    )
+
     canvas.save(tmp.name)
+
     return tmp.name
 
 
