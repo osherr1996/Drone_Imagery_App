@@ -155,7 +155,7 @@ def bi_category(mean_bi):
 
 
 # ============================================================
-# FONT HELPERS  — all sizes scale proportionally to canvas width
+# FONT HELPERS
 # ============================================================
 def safe_font(size=80, bold=False):
     candidates = [
@@ -169,18 +169,24 @@ def safe_font(size=80, bold=False):
             return ImageFont.truetype(fp, size)
         except Exception:
             pass
+    # PIL default doesn't support sizing — return with a note
     return ImageFont.load_default()
 
 
-def fit_font(draw, text, max_width, start_size=300, min_size=20, bold=True):
-    """Binary-search for the largest font size whose rendered width fits max_width."""
-    lo, hi = min_size, start_size
-    best   = safe_font(min_size, bold=bold)
+def fit_font_to_width(text, max_width, max_size=600, min_size=20, bold=True):
+    """
+    Return the largest TrueType font that renders `text` within `max_width` pixels.
+    Uses a throw-away 1×1 image for measurement so no canvas is needed yet.
+    """
+    probe = Image.new("RGB", (1, 1))
+    draw  = ImageDraw.Draw(probe)
+    lo, hi, best = min_size, max_size, safe_font(min_size, bold=bold)
     while lo <= hi:
         mid  = (lo + hi) // 2
         font = safe_font(mid, bold=bold)
         bb   = draw.textbbox((0, 0), text, font=font)
-        if (bb[2] - bb[0]) <= max_width:
+        w    = bb[2] - bb[0]
+        if w <= max_width:
             best = font
             lo   = mid + 1
         else:
@@ -188,15 +194,17 @@ def fit_font(draw, text, max_width, start_size=300, min_size=20, bold=True):
     return best
 
 
-def center_text(draw, text, y, canvas_w, font, fill="black"):
-    bb = draw.textbbox((0, 0), text, font=font)
-    x  = (canvas_w - (bb[2] - bb[0])) // 2
-    draw.text((x, y), text, fill=fill, font=font)
+def measure_text(font, text):
+    """Return (width, height) of rendered text."""
+    probe = Image.new("RGB", (1, 1))
+    draw  = ImageDraw.Draw(probe)
+    bb    = draw.textbbox((0, 0), text, font=font)
+    return bb[2] - bb[0], bb[3] - bb[1]
 
 
-def text_pixel_height(draw, text, font):
-    bb = draw.textbbox((0, 0), text, font=font)
-    return bb[3] - bb[1]
+def draw_centered(draw, text, y, canvas_w, font, fill="black"):
+    w, _ = measure_text(font, text)
+    draw.text(((canvas_w - w) // 2, y), text, fill=fill, font=font)
 
 
 # ============================================================
@@ -228,10 +236,10 @@ def make_severity_png(severity_img_path, original_img_path=None):
         orig_rgb = np.array(orig).astype(np.float32)
     else:
         orig_rgb = np.zeros_like(heat_rgb).astype(np.float32)
-    blended          = orig_rgb.copy()
-    blended[valid]   = 0.1 * orig_rgb[valid] + 0.9 * heat_rgb[valid]
-    blended          = np.clip(blended, 0, 255).astype(np.uint8)
-    alpha            = np.where(valid, 255, 0).astype(np.uint8)
+    blended = orig_rgb.copy()
+    blended[valid] = 0.1 * orig_rgb[valid] + 0.9 * heat_rgb[valid]
+    blended = np.clip(blended, 0, 255).astype(np.uint8)
+    alpha   = np.where(valid, 255, 0).astype(np.uint8)
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     Image.fromarray(np.dstack([blended, alpha])).save(tmp.name)
     return tmp.name, mean_sev
@@ -251,17 +259,21 @@ def make_pseudo_bi_png(pseudo_bi_img_path, original_img_path=None):
         orig_rgb = np.array(orig).astype(np.float32)
     else:
         orig_rgb = np.zeros_like(heat_rgb).astype(np.float32)
-    blended          = orig_rgb.copy()
-    blended[valid]   = 0.1 * orig_rgb[valid] + 0.9 * heat_rgb[valid]
-    blended          = np.clip(blended, 0, 255).astype(np.uint8)
-    alpha            = np.where(valid, 255, 0).astype(np.uint8)
+    blended = orig_rgb.copy()
+    blended[valid] = 0.1 * orig_rgb[valid] + 0.9 * heat_rgb[valid]
+    blended = np.clip(blended, 0, 255).astype(np.uint8)
+    alpha   = np.where(valid, 255, 0).astype(np.uint8)
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     Image.fromarray(np.dstack([blended, alpha])).save(tmp.name)
     return tmp.name, mean_bi
 
 
 # ============================================================
-# EXPORT: side-by-side PNG with large, canvas-scaled title
+# EXPORT: side-by-side PNG
+# Title  = 7 % of canvas width  (tall, always prominent)
+# Sub    = 4.5 % of canvas width
+# Labels = 5 % of panel width
+# All measured and placed precisely — no overlap guaranteed.
 # ============================================================
 def create_side_by_side_download(
     original_path,
@@ -291,8 +303,8 @@ def create_side_by_side_download(
     if not panels:
         return None
 
-    # ── uniform panel height ──────────────────────────────────────────
-    target_h = min(min(p.height for p in panels), 950)
+    # ── 1. resize panels to uniform height ───────────────────────────
+    target_h = min(min(p.height for p in panels), 1200)
 
     def rr(img, h):
         s = h / img.height
@@ -300,16 +312,18 @@ def create_side_by_side_download(
 
     panels = [rr(p, target_h) for p in panels]
 
-    margin = 60
-    gap    = 60
+    margin = max(40, target_h // 20)
+    gap    = max(40, target_h // 20)
 
     total_panel_w = sum(p.width for p in panels)
     out_w         = total_panel_w + gap * (len(panels) - 1) + margin * 2
-    usable_w      = out_w - margin * 2
 
-    # ── font fitting uses a scratch canvas ───────────────────────────
-    scratch     = Image.new("RGB", (out_w, 10), "white")
-    scratch_drw = ImageDraw.Draw(scratch)
+    # ── 2. choose font sizes as a fraction of canvas width ───────────
+    # These fractions guarantee the text is LARGE relative to the image.
+    title_target_w = int(out_w * 0.80)   # title occupies up to 80 % of width
+    sub_target_w   = int(out_w * 0.50)   # subtitle up to 50 %
+    min_pw         = min(p.width for p in panels)
+    label_target_w = int(min_pw * 0.75)  # panel label up to 75 % of panel
 
     title_text = f"{location}  |  {date}"
     if display_name and "|" in display_name:
@@ -317,51 +331,37 @@ def create_side_by_side_download(
         if suffix not in (date, location):
             title_text += f"  |  {suffix}"
 
-    # Title: fill ~85 % of usable width; start hint = canvas_w / 10
-    font_title = fit_font(scratch_drw, title_text,
-                          max_width=int(usable_w * 0.85),
-                          start_size=max(40, out_w // 10),
-                          min_size=24, bold=True)
+    font_title = fit_font_to_width(title_text,          title_target_w, max_size=800, bold=True)
+    font_sub   = fit_font_to_width("HAB Bloom Analysis", sub_target_w,   max_size=600, bold=False)
+    font_label = fit_font_to_width(max(labels, key=len), label_target_w, max_size=500, bold=True)
 
-    # Subtitle: fill ~55 % of usable width
-    font_sub = fit_font(scratch_drw, "HAB Bloom Analysis",
-                        max_width=int(usable_w * 0.55),
-                        start_size=max(28, out_w // 16),
-                        min_size=18, bold=False)
+    # ── 3. measure rendered heights ──────────────────────────────────
+    _, h_title  = measure_text(font_title, title_text)
+    _, h_sub    = measure_text(font_sub,   "HAB Bloom Analysis")
+    _, h_label  = measure_text(font_label, labels[0])
 
-    # Panel label: fill ~78 % of narrowest panel
-    min_pw     = min(p.width for p in panels)
-    font_label = fit_font(scratch_drw, max(labels, key=len),
-                          max_width=int(min_pw * 0.78),
-                          start_size=max(20, out_w // 22),
-                          min_size=14, bold=True)
+    # generous padding so nothing feels cramped
+    pad_between = max(20, h_title // 4)   # between title and subtitle
+    pad_after   = max(20, h_sub   // 3)   # between subtitle and panel labels
+    pad_label   = max(16, h_label  // 3)  # between label and image top
 
-    # ── measure heights ───────────────────────────────────────────────
-    h_title  = text_pixel_height(scratch_drw, title_text,          font_title)
-    h_sub    = text_pixel_height(scratch_drw, "HAB Bloom Analysis", font_sub)
-    h_label  = text_pixel_height(scratch_drw, labels[0],            font_label)
-
-    inner_gap   = max(12, h_title // 5)   # gap between title and subtitle
-    label_pad   = max(10, h_label  // 3)  # gap below label before image
-
-    header_h     = margin + h_title + inner_gap + h_sub + inner_gap
-    label_area_h = h_label + label_pad
+    header_h     = margin + h_title + pad_between + h_sub + pad_after
+    label_area_h = h_label + pad_label
     out_h        = header_h + label_area_h + target_h + margin
 
-    # ── build final canvas ────────────────────────────────────────────
+    # ── 4. draw ───────────────────────────────────────────────────────
     canvas = Image.new("RGB", (out_w, out_h), "white")
     draw   = ImageDraw.Draw(canvas)
 
-    center_text(draw, title_text,          margin,                        out_w, font_title, fill="black")
-    center_text(draw, "HAB Bloom Analysis", margin + h_title + inner_gap, out_w, font_sub,   fill=(70, 70, 70))
+    draw_centered(draw, title_text,          margin,                             out_w, font_title, fill="black")
+    draw_centered(draw, "HAB Bloom Analysis", margin + h_title + pad_between,    out_w, font_sub,   fill=(70, 70, 70))
 
     x       = margin
     y_label = header_h
     y_img   = y_label + label_area_h
 
     for panel, label in zip(panels, labels):
-        bb = draw.textbbox((0, 0), label, font=font_label)
-        lw = bb[2] - bb[0]
+        lw, _ = measure_text(font_label, label)
         draw.text((x + (panel.width - lw) // 2, y_label), label, fill="black", font=font_label)
         canvas.paste(panel, (x, y_img))
         x += panel.width + gap
@@ -379,10 +379,8 @@ def make_mp4_from_items(items, location, mode, fps=1):
     for item in items:
         if item["original_path"] is None:
             continue
-        if mode == "original_relative" and item["severity_path"] is None:
-            continue
-        if mode == "original_pseudo"   and item["pseudo_bi_path"] is None:
-            continue
+        if mode == "original_relative" and item["severity_path"]  is None: continue
+        if mode == "original_pseudo"   and item["pseudo_bi_path"] is None: continue
         png_path = create_side_by_side_download(
             original_path  = item["original_path"],
             severity_path  = item["severity_path"],
@@ -404,10 +402,10 @@ def make_mp4_from_items(items, location, mode, fps=1):
 
     norm_frames = []
     for im in frames:
-        canvas = Image.new("RGB", (max_w, max_h), "white")
-        canvas.paste(im, ((max_w - im.width) // 2, (max_h - im.height) // 2))
+        cv = Image.new("RGB", (max_w, max_h), "white")
+        cv.paste(im, ((max_w - im.width) // 2, (max_h - im.height) // 2))
         out = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
-        canvas.save(out.name)
+        cv.save(out.name)
         norm_frames.append(out.name)
 
     tmp_dir   = tempfile.mkdtemp()
@@ -433,7 +431,7 @@ def make_mp4_from_items(items, location, mode, fps=1):
             writer.close()
             return mp4_path
         except Exception as e:
-            st.error(f"Could not create MP4. Install ffmpeg or imageio[ffmpeg]. Error: {e}")
+            st.error(f"Could not create MP4. Error: {e}")
             return None
 
 
@@ -669,7 +667,7 @@ folium.TileLayer(
     attr="Esri", name="Esri World Imagery", control=True,
 ).add_to(m)
 
-summary_rows              = []
+summary_rows               = []
 matched_items_for_download = []
 
 for i, sev_item in enumerate(all_items):
