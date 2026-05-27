@@ -45,8 +45,6 @@ if not HF_TOKEN:
 # ============================================================
 # COLOUR PALETTES
 # ============================================================
-
-# Severity: blue → yellow → red  (relative, 0–3)
 SEVERITY_PALETTE = np.array([
     [0,   80,  220],
     [80,  170, 255],
@@ -57,16 +55,14 @@ SEVERITY_PALETTE = np.array([
     [120,   0,   0],
 ], dtype=np.float32)
 
-# Pseudo-BI: dark teal → teal-green → lime → yellow → orange → red → dark red
-# Matches the reference image: Clean(dark teal) → Low → Medium → High → Very High → Extreme
 PSEUDO_BI_PALETTE = np.array([
-    [0,   80,  60],    # dark teal   (Clean)
-    [0,  130,  80],    # teal-green
-    [80, 185,  50],    # lime green  (Low)
-    [220, 220,  0],    # yellow      (Medium)
-    [255, 140,  0],    # orange      (High)
-    [200,  30,  0],    # red         (Very High)
-    [100,   0,  0],    # dark red    (Extreme)
+    [0,   80,  60],
+    [0,  130,  80],
+    [80, 185,  50],
+    [220, 220,  0],
+    [255, 140,  0],
+    [200,  30,  0],
+    [100,   0,  0],
 ], dtype=np.float32)
 
 BI_MIN = 0.6
@@ -77,10 +73,10 @@ BI_MAX = 5.0
 # HELPERS
 # ============================================================
 def apply_continuous_palette(t_arr, palette):
-    n    = len(palette) - 1
-    idx  = np.clip(t_arr * n, 0, n)
-    lo   = np.floor(idx).astype(int)
-    hi   = np.clip(lo + 1, 0, n)
+    n = len(palette) - 1
+    idx = np.clip(t_arr * n, 0, n)
+    lo = np.floor(idx).astype(int)
+    hi = np.clip(lo + 1, 0, n)
     frac = (idx - lo)[..., None]
     return (palette[lo] * (1 - frac) + palette[hi] * frac).astype(np.uint8)
 
@@ -92,8 +88,12 @@ def list_files(repo_id, repo_type, token):
 
 @st.cache_data(show_spinner=False)
 def download_file(repo_id, filename, repo_type, token):
-    return hf_hub_download(repo_id=repo_id, filename=filename,
-                           repo_type=repo_type, token=token)
+    return hf_hub_download(
+        repo_id=repo_id,
+        filename=filename,
+        repo_type=repo_type,
+        token=token,
+    )
 
 
 def extract_date_label(path):
@@ -118,61 +118,105 @@ def read_jgw_bounds(img_path):
     jgw_path = os.path.splitext(img_path)[0] + ".jgw"
     with open(jgw_path) as f:
         vals = [float(x.strip()) for x in f.readlines()]
+
     pixel_size_x = vals[0]
     pixel_size_y = vals[3]
-    x_center     = vals[4]
-    y_center     = vals[5]
-    img          = Image.open(img_path).convert("L")
-    W, H         = img.size
+    x_center = vals[4]
+    y_center = vals[5]
+
+    img = Image.open(img_path).convert("L")
+    W, H = img.size
+
     xmin = x_center - pixel_size_x / 2
     ymax = y_center - pixel_size_y / 2
     xmax = xmin + pixel_size_x * W
     ymin = ymax + pixel_size_y * H
-    t    = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
-    lon_min, lat_min = t.transform(xmin, ymin)
-    lon_max, lat_max = t.transform(xmax, ymax)
+
+    transformer = Transformer.from_crs("EPSG:3857", "EPSG:4326", always_xy=True)
+    lon_min, lat_min = transformer.transform(xmin, ymin)
+    lon_max, lat_max = transformer.transform(xmax, ymax)
+
     return [[lat_min, lon_min], [lat_max, lon_max]]
 
 
+def get_location_label(selected_body):
+    return selected_body.replace("_", " ").replace("-", " ").title()
+
+
 def severity_category(mean_severity):
-    if mean_severity < 1:  return "Low"
-    if mean_severity < 2:  return "Medium"
+    if mean_severity < 1:
+        return "Low"
+    if mean_severity < 2:
+        return "Medium"
     return "High"
 
 
 def bi_category(mean_bi):
-    if mean_bi < 1.5:  return "Clean"
-    if mean_bi < 2.5:  return "Low bloom"
-    if mean_bi < 3.5:  return "Medium bloom"
+    if mean_bi < 1.5:
+        return "Clean"
+    if mean_bi < 2.5:
+        return "Low bloom"
+    if mean_bi < 3.5:
+        return "Medium bloom"
     return "High bloom"
 
 
+def get_font(size=24, bold=False):
+    candidates = [
+        "arialbd.ttf" if bold else "arial.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf" if bold else "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ]
+    for fp in candidates:
+        try:
+            return ImageFont.truetype(fp, size)
+        except Exception:
+            pass
+    return ImageFont.load_default()
+
+
+def add_title_bar(img, title, subtitle=None, bar_h=82):
+    img = img.convert("RGB")
+    W, H = img.size
+    canvas = Image.new("RGB", (W, H + bar_h), "white")
+    canvas.paste(img, (0, bar_h))
+    draw = ImageDraw.Draw(canvas)
+
+    font_title = get_font(26, bold=True)
+    font_sub = get_font(18, bold=False)
+
+    draw.text((18, 12), title, fill="black", font=font_title)
+    if subtitle:
+        draw.text((18, 46), subtitle, fill=(60, 60, 60), font=font_sub)
+
+    return canvas
+
+
 def make_original_png(img_path):
-    img  = Image.open(img_path).convert("RGB")
-    arr  = np.array(img)
-    black = (arr[:,:,0] < 10) & (arr[:,:,1] < 10) & (arr[:,:,2] < 10)
+    img = Image.open(img_path).convert("RGB")
+    arr = np.array(img)
+    black = (arr[:, :, 0] < 10) & (arr[:, :, 1] < 10) & (arr[:, :, 2] < 10)
     rgba = np.zeros((*arr.shape[:2], 4), dtype=np.uint8)
-    rgba[:,:,:3] = arr
-    rgba[:,:,3]  = np.where(black, 0, 255).astype(np.uint8)
+    rgba[:, :, :3] = arr
+    rgba[:, :, 3] = np.where(black, 0, 255).astype(np.uint8)
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     Image.fromarray(rgba).save(tmp.name)
     return tmp.name
 
 
 def make_severity_png(severity_img_path, original_img_path=None):
-    """Severity heatmap blended over original. Returns (png_path, mean_severity)."""
     sev_img = Image.open(severity_img_path).convert("L")
     sev_arr = np.array(sev_img).astype(np.float32)
-    valid   = sev_arr > 0
+    valid = sev_arr > 0
     severity = (sev_arr / 255.0) * 3.0
     mean_sev = float(np.mean(severity[valid])) if valid.any() else 0.0
 
-    t        = np.clip(severity / 3.0, 0, 1)
+    t = np.clip(severity / 3.0, 0, 1)
     heat_rgb = apply_continuous_palette(t, SEVERITY_PALETTE)
 
     if original_img_path and os.path.exists(original_img_path):
         orig = Image.open(original_img_path).convert("RGB").resize(
-            (sev_img.width, sev_img.height), Image.LANCZOS)
+            (sev_img.width, sev_img.height), Image.LANCZOS
+        )
         orig_rgb = np.array(orig).astype(np.float32)
     else:
         orig_rgb = np.zeros_like(heat_rgb).astype(np.float32)
@@ -180,8 +224,8 @@ def make_severity_png(severity_img_path, original_img_path=None):
     blended = orig_rgb.copy()
     blended[valid] = 0.1 * orig_rgb[valid] + 0.9 * heat_rgb[valid]
     blended = np.clip(blended, 0, 255).astype(np.uint8)
-    alpha   = np.where(valid, 255, 0).astype(np.uint8)
-    rgba    = np.dstack([blended, alpha])
+    alpha = np.where(valid, 255, 0).astype(np.uint8)
+    rgba = np.dstack([blended, alpha])
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     Image.fromarray(rgba).save(tmp.name)
@@ -189,25 +233,20 @@ def make_severity_png(severity_img_path, original_img_path=None):
 
 
 def make_pseudo_bi_png(pseudo_bi_img_path, original_img_path=None):
-    """
-    Pseudo-BI heatmap. The JPG is stored as grayscale where
-    pixel=0 → BI_MIN and pixel=255 → BI_MAX.
-    Returns (png_path, mean_bi).
-    """
-    bi_img  = Image.open(pseudo_bi_img_path).convert("L")
-    bi_arr  = np.array(bi_img).astype(np.float32)
-    valid   = bi_arr > 0
+    bi_img = Image.open(pseudo_bi_img_path).convert("L")
+    bi_arr = np.array(bi_img).astype(np.float32)
+    valid = bi_arr > 0
 
-    # Rescale 0–255 → BI_MIN–BI_MAX
     bi_vals = bi_arr / 255.0 * (BI_MAX - BI_MIN) + BI_MIN
     mean_bi = float(np.mean(bi_vals[valid])) if valid.any() else BI_MIN
 
-    t        = np.clip((bi_vals - BI_MIN) / (BI_MAX - BI_MIN), 0, 1)
+    t = np.clip((bi_vals - BI_MIN) / (BI_MAX - BI_MIN), 0, 1)
     heat_rgb = apply_continuous_palette(t, PSEUDO_BI_PALETTE)
 
     if original_img_path and os.path.exists(original_img_path):
         orig = Image.open(original_img_path).convert("RGB").resize(
-            (bi_img.width, bi_img.height), Image.LANCZOS)
+            (bi_img.width, bi_img.height), Image.LANCZOS
+        )
         orig_rgb = np.array(orig).astype(np.float32)
     else:
         orig_rgb = np.zeros_like(heat_rgb).astype(np.float32)
@@ -215,16 +254,20 @@ def make_pseudo_bi_png(pseudo_bi_img_path, original_img_path=None):
     blended = orig_rgb.copy()
     blended[valid] = 0.1 * orig_rgb[valid] + 0.9 * heat_rgb[valid]
     blended = np.clip(blended, 0, 255).astype(np.uint8)
-    alpha   = np.where(valid, 255, 0).astype(np.uint8)
-    rgba    = np.dstack([blended, alpha])
+    alpha = np.where(valid, 255, 0).astype(np.uint8)
+    rgba = np.dstack([blended, alpha])
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
     Image.fromarray(rgba).save(tmp.name)
     return tmp.name, mean_bi
 
 
-def create_side_by_side_download(original_path, severity_path,
-                                  pseudo_bi_path, date):
+def resize_keep_ratio(img, h):
+    scale = h / img.height
+    return img.resize((int(img.width * scale), h), Image.LANCZOS)
+
+
+def create_side_by_side_download(original_path, severity_path, pseudo_bi_path, date, location):
     panels = []
     labels = []
 
@@ -232,13 +275,15 @@ def create_side_by_side_download(original_path, severity_path,
         panels.append(Image.open(original_path).convert("RGB"))
         labels.append("Original")
 
+    mean_sev = None
     if severity_path and os.path.exists(severity_path):
-        sev_png, _ = make_severity_png(severity_path, original_path)
+        sev_png, mean_sev = make_severity_png(severity_path, original_path)
         panels.append(Image.open(sev_png).convert("RGB"))
         labels.append("Relative Severity")
 
+    mean_bi = None
     if pseudo_bi_path and os.path.exists(pseudo_bi_path):
-        bi_png, _ = make_pseudo_bi_png(pseudo_bi_path, original_path)
+        bi_png, mean_bi = make_pseudo_bi_png(pseudo_bi_path, original_path)
         panels.append(Image.open(bi_png).convert("RGB"))
         labels.append("Pseudo Bloom Index")
 
@@ -246,35 +291,34 @@ def create_side_by_side_download(original_path, severity_path,
         return None
 
     target_h = min(min(p.height for p in panels), 900)
-
-    def resize_keep_ratio(img, h):
-        scale = h / img.height
-        return img.resize((int(img.width * scale), h), Image.LANCZOS)
-
     panels = [resize_keep_ratio(p, target_h) for p in panels]
-    title_h, gap, margin = 55, 20, 20
+
+    title_h, gap, margin = 100, 20, 20
     out_w = sum(p.width for p in panels) + gap * (len(panels) - 1) + margin * 2
     out_h = target_h + title_h + margin * 2
 
     canvas = Image.new("RGB", (out_w, out_h), "white")
-    draw   = ImageDraw.Draw(canvas)
+    draw = ImageDraw.Draw(canvas)
 
-    try:
-        font_title = ImageFont.truetype("arial.ttf", 26)
-        font_label = ImageFont.truetype("arial.ttf", 22)
-    except Exception:
-        font_title = ImageFont.load_default()
-        font_label = ImageFont.load_default()
+    font_title = get_font(28, bold=True)
+    font_sub = get_font(20, bold=False)
+    font_label = get_font(22, bold=True)
 
-    draw.text((margin, 12),
-              f"HAB Analysis | {date}",
-              fill="black", font=font_title)
+    metric_parts = []
+    if mean_sev is not None:
+        metric_parts.append(f"Mean severity: {mean_sev:.2f}")
+    if mean_bi is not None:
+        metric_parts.append(f"Pseudo-BI: {mean_bi:.2f}")
+    metric_text = " | ".join(metric_parts)
+
+    draw.text((margin, 12), f"HAB Analysis | {location}", fill="black", font=font_title)
+    draw.text((margin, 50), f"Date: {date}" + (f" | {metric_text}" if metric_text else ""), fill=(55, 55, 55), font=font_sub)
 
     x = margin
     y = margin + title_h
     for panel, label in zip(panels, labels):
         canvas.paste(panel, (x, y))
-        draw.text((x, y - 25), label, fill="black", font=font_label)
+        draw.text((x, y - 28), label, fill="black", font=font_label)
         x += panel.width + gap
 
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".png")
@@ -282,14 +326,45 @@ def create_side_by_side_download(original_path, severity_path,
     return tmp.name
 
 
+def make_mp4_from_pngs(png_paths, fps=1):
+    try:
+        import imageio.v2 as imageio
+    except Exception:
+        st.error("Missing dependency: imageio. Install with: pip install imageio imageio-ffmpeg")
+        return None
+
+    if not png_paths:
+        return None
+
+    frames = [Image.open(p).convert("RGB") for p in png_paths]
+    max_w = max(im.width for im in frames)
+    max_h = max(im.height for im in frames)
+
+    # MP4 encoders prefer even dimensions
+    if max_w % 2 == 1:
+        max_w += 1
+    if max_h % 2 == 1:
+        max_h += 1
+
+    normalized_frames = []
+    for im in frames:
+        canvas = Image.new("RGB", (max_w, max_h), "white")
+        x = (max_w - im.width) // 2
+        y = (max_h - im.height) // 2
+        canvas.paste(im, (x, y))
+        normalized_frames.append(np.array(canvas))
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".mp4")
+    imageio.mimsave(tmp.name, normalized_frames, fps=fps, macro_block_size=16)
+    return tmp.name
+
+
 def make_legend_html():
-    # Severity: blue → yellow → red (no numbers, just Low/Medium/High)
-    sev_grad = ("linear-gradient(to top,"
-                "rgb(0,80,220),rgb(255,235,0),rgb(220,0,0))")
-    # Pseudo-BI: dark teal → lime → yellow → orange → red → dark red
-    bi_grad  = ("linear-gradient(to top,"
-                "rgb(0,80,60),rgb(0,130,80),rgb(80,185,50),"
-                "rgb(220,220,0),rgb(255,140,0),rgb(200,30,0),rgb(100,0,0))")
+    sev_grad = "linear-gradient(to top,rgb(0,80,220),rgb(255,235,0),rgb(220,0,0))"
+    bi_grad = (
+        "linear-gradient(to top,rgb(0,80,60),rgb(0,130,80),rgb(80,185,50),"
+        "rgb(220,220,0),rgb(255,140,0),rgb(200,30,0),rgb(100,0,0))"
+    )
     return f"""
     <div style="position:fixed;bottom:30px;right:30px;z-index:9999;
     background:white;padding:12px;border:2px solid #444;border-radius:8px;
@@ -324,8 +399,8 @@ def make_legend_html():
 
     <hr style="margin:6px 0;"/>
     <div style="font-size:10px;color:#666;">
-      Severity: relative (SigLIP classes)<br>
-      Pseudo-BI: calibrated to Sentinel-2 B5/B4
+      Severity: relative<br>
+      Pseudo-BI: calibrated index
     </div>
     </div>"""
 
@@ -345,7 +420,6 @@ def add_layer_control_scroll(m, max_height="450px"):
 
 
 def make_timeline_chart(summary_df):
-    """Trendline showing Pseudo Bloom Index only."""
     chart_df = summary_df.copy()
     chart_df["date_sort"] = chart_df["date_dt"].dt.strftime("%Y-%m-%d")
 
@@ -354,9 +428,9 @@ def make_timeline_chart(summary_df):
         if not np.isnan(r.get("mean_pseudo_bi", float("nan"))):
             rows.append({
                 "date_label": r["date"],
-                "date_sort":  r["date_sort"],
-                "value":      r["mean_pseudo_bi"],
-                "metric":     f"Pseudo-BI ({BI_MIN}–{BI_MAX})",
+                "date_sort": r["date_sort"],
+                "value": r["mean_pseudo_bi"],
+                "metric": f"Pseudo-BI ({BI_MIN}–{BI_MAX})",
             })
 
     if not rows:
@@ -365,33 +439,42 @@ def make_timeline_chart(summary_df):
 
     spec = {
         "data": {"values": rows},
-        "width": 360, "height": 220,
+        "width": 360,
+        "height": 220,
         "layer": [
             {
                 "mark": {"type": "line", "opacity": 0.7, "color": "#00a86b"},
                 "encoding": {
-                    "x": {"field": "date_label", "type": "ordinal",
-                          "sort": {"field": "date_sort", "order": "ascending"},
-                          "axis": {"title": "Date"}},
-                    "y": {"field": "value", "type": "quantitative",
-                          "axis": {"title": f"Pseudo-BI ({BI_MIN}–{BI_MAX})"},
-                          "scale": {"domain": [BI_MIN, BI_MAX]}},
-                }
+                    "x": {
+                        "field": "date_label",
+                        "type": "ordinal",
+                        "sort": {"field": "date_sort", "order": "ascending"},
+                        "axis": {"title": "Date"},
+                    },
+                    "y": {
+                        "field": "value",
+                        "type": "quantitative",
+                        "axis": {"title": f"Pseudo-BI ({BI_MIN}–{BI_MAX})"},
+                        "scale": {"domain": [BI_MIN, BI_MAX]},
+                    },
+                },
             },
             {
                 "mark": {"type": "circle", "size": 150, "color": "#00a86b"},
                 "encoding": {
-                    "x": {"field": "date_label", "type": "ordinal",
-                          "sort": {"field": "date_sort", "order": "ascending"}},
+                    "x": {
+                        "field": "date_label",
+                        "type": "ordinal",
+                        "sort": {"field": "date_sort", "order": "ascending"},
+                    },
                     "y": {"field": "value", "type": "quantitative"},
                     "tooltip": [
-                        {"field": "date_label", "type": "ordinal",       "title": "Date"},
-                        {"field": "value",      "type": "quantitative",  "title": "Pseudo-BI",
-                         "format": ".3f"},
-                    ]
-                }
-            }
-        ]
+                        {"field": "date_label", "type": "ordinal", "title": "Date"},
+                        {"field": "value", "type": "quantitative", "title": "Pseudo-BI", "format": ".3f"},
+                    ],
+                },
+            },
+        ],
     }
     st.vega_lite_chart(spec, use_container_width=True)
 
@@ -400,7 +483,6 @@ def make_timeline_chart(summary_df):
 # LOAD FILE LIST
 # ============================================================
 all_files = list_files(HF_REPO_ID, HF_REPO_TYPE, HF_TOKEN)
-
 water_bodies = sorted({f.split("/")[0] for f in all_files if "/" in f})
 
 if not water_bodies:
@@ -408,6 +490,7 @@ if not water_bodies:
     st.stop()
 
 selected_body = st.selectbox("Choose water body", water_bodies)
+location_label = get_location_label(selected_body)
 
 
 def get_jpgs(prefix):
@@ -418,9 +501,9 @@ def get_jpgs(prefix):
     ])
 
 
-original_files   = get_jpgs("original")
-severity_files   = get_jpgs("severity")
-pseudo_bi_files  = get_jpgs("pseudo_bi")
+original_files = get_jpgs("original")
+severity_files = get_jpgs("severity")
+pseudo_bi_files = get_jpgs("pseudo_bi")
 
 if not severity_files:
     st.warning("No severity heatmaps found for this water body.")
@@ -433,7 +516,7 @@ if not severity_files:
 def download_with_sidecars(hf_paths):
     local = {}
     for hf_path in hf_paths:
-        date      = extract_date_label(hf_path)
+        date = extract_date_label(hf_path)
         local_jpg = download_file(HF_REPO_ID, hf_path, HF_REPO_TYPE, HF_TOKEN)
         for ext in [".jgw", ".prj"]:
             sidecar = os.path.splitext(hf_path)[0] + ext
@@ -444,13 +527,13 @@ def download_with_sidecars(hf_paths):
 
 
 with st.spinner("Downloading data..."):
-    orig_by_date      = download_with_sidecars(original_files)
-    sev_by_date       = download_with_sidecars(severity_files)
+    orig_by_date = download_with_sidecars(original_files)
+    sev_by_date = download_with_sidecars(severity_files)
     pseudo_bi_by_date = download_with_sidecars(pseudo_bi_files)
 
 all_dates = sorted(
     sev_by_date.keys(),
-    key=lambda d: parse_date(d) if pd.notna(parse_date(d)) else pd.Timestamp.max
+    key=lambda d: parse_date(d) if pd.notna(parse_date(d)) else pd.Timestamp.max,
 )
 
 if not all_dates:
@@ -462,60 +545,65 @@ if not all_dates:
 # BUILD MAP
 # ============================================================
 first_bounds = read_jgw_bounds(sev_by_date[all_dates[0]])
-center_lat   = (first_bounds[0][0] + first_bounds[1][0]) / 2
-center_lon   = (first_bounds[0][1] + first_bounds[1][1]) / 2
+center_lat = (first_bounds[0][0] + first_bounds[1][0]) / 2
+center_lon = (first_bounds[0][1] + first_bounds[1][1]) / 2
 
 m = folium.Map(location=[center_lat, center_lon], zoom_start=18, tiles=None)
 
 folium.TileLayer("OpenStreetMap", name="OpenStreetMap", control=True).add_to(m)
 folium.TileLayer(
     tiles="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
-    attr="Esri", name="Esri World Imagery", control=True,
+    attr="Esri",
+    name="Esri World Imagery",
+    control=True,
 ).add_to(m)
 
 summary_rows = []
 
 for i, date in enumerate(all_dates):
     show_first = (i == 0)
-    bounds     = read_jgw_bounds(sev_by_date[date])
-    orig_path  = orig_by_date.get(date)
+    bounds = read_jgw_bounds(sev_by_date[date])
+    orig_path = orig_by_date.get(date)
 
-    # ── Original ──────────────────────────────────────────────────────────
     if orig_path:
         ImageOverlay(
             name=f"{date} | Original",
             image=make_original_png(orig_path),
-            bounds=bounds, opacity=1.0, interactive=True,
+            bounds=bounds,
+            opacity=1.0,
+            interactive=True,
             show=show_first,
         ).add_to(m)
 
-    # ── Severity ──────────────────────────────────────────────────────────
     sev_png, mean_sev = make_severity_png(sev_by_date[date], orig_path)
     ImageOverlay(
         name=f"{date} | Severity",
         image=sev_png,
-        bounds=bounds, opacity=1.0, interactive=True,
+        bounds=bounds,
+        opacity=1.0,
+        interactive=True,
         show=False,
     ).add_to(m)
 
-    # ── Pseudo-BI ─────────────────────────────────────────────────────────
     mean_bi = float("nan")
     if date in pseudo_bi_by_date:
         bi_png, mean_bi = make_pseudo_bi_png(pseudo_bi_by_date[date], orig_path)
         ImageOverlay(
             name=f"{date} | Pseudo-BI",
             image=bi_png,
-            bounds=bounds, opacity=1.0, interactive=True,
+            bounds=bounds,
+            opacity=1.0,
+            interactive=True,
             show=False,
         ).add_to(m)
 
     summary_rows.append({
-        "date":           date,
-        "date_dt":        parse_date(date),
-        "mean_severity":  mean_sev,
+        "date": date,
+        "date_dt": parse_date(date),
+        "mean_severity": mean_sev,
         "severity_level": severity_category(mean_sev),
         "mean_pseudo_bi": mean_bi,
-        "bi_level":       bi_category(mean_bi) if not np.isnan(mean_bi) else "—",
+        "bi_level": bi_category(mean_bi) if not np.isnan(mean_bi) else "—",
     })
 
 m.get_root().html.add_child(folium.Element(make_legend_html()))
@@ -529,7 +617,7 @@ folium.LayerControl(collapsed=False).add_to(m)
 col1, col2 = st.columns([3, 1])
 
 with col1:
-    st.caption("Use the layer control (top-right of map) to toggle layers.")
+    st.caption("Use the layer control at the top-right of the map to toggle dates and layers.")
     st_folium(m, width=1000, height=700)
 
 with col2:
@@ -541,14 +629,13 @@ with col2:
         .reset_index(drop=True)
     )
 
-    display_cols = ["date", "mean_severity", "severity_level",
-                    "mean_pseudo_bi", "bi_level"]
-    rename_map   = {
-        "date":           "Date",
-        "mean_severity":  "Severity",
+    display_cols = ["date", "mean_severity", "severity_level", "mean_pseudo_bi", "bi_level"]
+    rename_map = {
+        "date": "Date",
+        "mean_severity": "Severity",
         "severity_level": "Sev. Level",
         "mean_pseudo_bi": "Pseudo-BI",
-        "bi_level":       "BI Level",
+        "bi_level": "BI Level",
     }
 
     st.dataframe(
@@ -561,19 +648,16 @@ with col2:
 
     latest = summary_df.iloc[-1]
     st.metric("Latest Severity Level", latest["severity_level"])
-    st.metric("Latest Mean Severity",  f"{latest['mean_severity']:.2f}")
+    st.metric("Latest Mean Severity", f"{latest['mean_severity']:.2f}")
 
     if not np.isnan(latest["mean_pseudo_bi"]):
-        st.metric("Latest BI Level",  latest["bi_level"])
+        st.metric("Latest BI Level", latest["bi_level"])
         st.metric("Latest Pseudo-BI", f"{latest['mean_pseudo_bi']:.2f}")
 
     st.divider()
-    st.subheader("Download Image")
+    st.subheader("Download PNG")
 
-    downloadable_dates = [
-        d for d in all_dates
-        if d in orig_by_date and d in sev_by_date
-    ]
+    downloadable_dates = [d for d in all_dates if d in orig_by_date and d in sev_by_date]
 
     if downloadable_dates:
         selected_dl = st.selectbox(
@@ -587,19 +671,55 @@ with col2:
             sev_by_date.get(selected_dl),
             pseudo_bi_by_date.get(selected_dl),
             selected_dl,
+            location_label,
         )
 
         if preview_path:
-            st.image(preview_path,
-                     caption=f"Preview ({selected_dl})",
-                     use_container_width=True)
+            st.image(
+                preview_path,
+                caption=f"{location_label} | {selected_dl}",
+                use_container_width=True,
+            )
 
             with open(preview_path, "rb") as f:
                 st.download_button(
-                    label="Download original + severity + pseudo-BI",
+                    label="Download titled PNG",
                     data=f,
-                    file_name=(f"{selected_body}_{selected_dl}_analysis.png"),
+                    file_name=f"{selected_body}_{selected_dl}_analysis.png",
                     mime="image/png",
                 )
     else:
-        st.info("No matching images found for download.")
+        st.info("No matching images found for PNG download.")
+
+    st.divider()
+    st.subheader("Download MP4")
+
+    fps = st.slider("Frames per second", min_value=1, max_value=10, value=1)
+
+    if st.button("Create MP4 from all dates"):
+        png_paths = []
+        with st.spinner("Creating titled PNG frames and MP4..."):
+            for d in downloadable_dates:
+                frame_path = create_side_by_side_download(
+                    orig_by_date.get(d),
+                    sev_by_date.get(d),
+                    pseudo_bi_by_date.get(d),
+                    d,
+                    location_label,
+                )
+                if frame_path:
+                    png_paths.append(frame_path)
+
+            mp4_path = make_mp4_from_pngs(png_paths, fps=fps)
+
+        if mp4_path:
+            st.video(mp4_path)
+            with open(mp4_path, "rb") as f:
+                st.download_button(
+                    label="Download MP4 video",
+                    data=f,
+                    file_name=f"{selected_body}_all_dates_analysis.mp4",
+                    mime="video/mp4",
+                )
+        else:
+            st.warning("Could not create MP4. Check that imageio and imageio-ffmpeg are installed.")
